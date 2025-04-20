@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"github.com/lib/pq"
-	"github.com/mark3labs/mcp-go/mcp"
 )
 
 func getSchemaParam(r *http.Request) string {
@@ -26,7 +25,27 @@ type QueryRequest struct {
 	EventName  string        `json:"event_name,omitempty"`
 }
 
-func ExecuteQueryHandler(db *sql.DB, hub *mcp.Hub) http.HandlerFunc {
+// Event represents a server-sent event
+type Event struct {
+	Name string
+	Data interface{}
+}
+
+// NewEvent creates a new event with the given name and data
+func NewEvent(name string, data interface{}) Event {
+	return Event{
+		Name: name,
+		Data: data,
+	}
+}
+
+// HubInterface defines the interface for a Hub that can broadcast events
+type HubInterface interface {
+	// Broadcast is a channel for sending events
+	Broadcast() chan<- Event
+}
+
+func ExecuteQueryHandler(db *sql.DB, hub HubInterface) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req QueryRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -80,7 +99,7 @@ func ExecuteQueryHandler(db *sql.DB, hub *mcp.Hub) http.HandlerFunc {
 		}
 
 		if req.Broadcast {
-			hub.Broadcast <- mcp.NewEvent(req.EventName, resp)
+			hub.Broadcast() <- NewEvent(req.EventName, resp)
 		}
 
 		json.NewEncoder(w).Encode(resp)
@@ -114,11 +133,11 @@ func FullTableSchemaHandler(db *sql.DB) http.HandlerFunc {
 		var foreignKeys []FKConstraint
 		var samples []map[string]interface{}
 
-		colRows, err := db.Query(\`
+		colRows, err := db.Query(`
 			SELECT column_name, data_type, is_nullable, column_default
 			FROM information_schema.columns
 			WHERE table_schema = $1 AND table_name = $2;
-		\`, schema, table)
+		`, schema, table)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -130,7 +149,7 @@ func FullTableSchemaHandler(db *sql.DB) http.HandlerFunc {
 			columns = append(columns, col)
 		}
 
-		query := fmt.Sprintf(\`SELECT * FROM %s.%s LIMIT 5\`, pq.QuoteIdentifier(schema), pq.QuoteIdentifier(table))
+		query := fmt.Sprintf(`SELECT * FROM %s.%s LIMIT 5`, pq.QuoteIdentifier(schema), pq.QuoteIdentifier(table))
 		sampleRows, err := db.Query(query)
 		if err == nil {
 			defer sampleRows.Close()
@@ -150,7 +169,7 @@ func FullTableSchemaHandler(db *sql.DB) http.HandlerFunc {
 			}
 		}
 
-		fkRows, err := db.Query(\`
+		fkRows, err := db.Query(`
 			SELECT
 				tc.constraint_name, tc.table_name, kcu.column_name,
 				ccu.table_name, ccu.column_name
@@ -164,7 +183,7 @@ func FullTableSchemaHandler(db *sql.DB) http.HandlerFunc {
 			WHERE tc.constraint_type = 'FOREIGN KEY'
 			  AND tc.table_schema = $1
 			  AND (tc.table_name = $2 OR ccu.table_name = $2);
-		\`, schema, table)
+		`, schema, table)
 		if err == nil {
 			defer fkRows.Close()
 			for fkRows.Next() {
@@ -186,12 +205,12 @@ func FullTableSchemaHandler(db *sql.DB) http.HandlerFunc {
 func ListTablesHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		schema := getSchemaParam(r)
-		rows, err := db.Query(\`
+		rows, err := db.Query(`
 			SELECT table_name
 			FROM information_schema.tables
 			WHERE table_schema = $1
 			ORDER BY table_name;
-		\`, schema)
+		`, schema)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -216,11 +235,11 @@ func DescribeTableHandler(db *sql.DB) http.HandlerFunc {
 			http.Error(w, "Missing table parameter", http.StatusBadRequest)
 			return
 		}
-		rows, err := db.Query(\`
-			SELECT column_name, data_type, is_nullable, column_default
+		rows, err := db.Query(`
+			SELECT column_name, data_type, is_nullable
 			FROM information_schema.columns
 			WHERE table_schema = $1 AND table_name = $2;
-		\`, schema, table)
+		`, schema, table)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -236,7 +255,7 @@ func DescribeTableHandler(db *sql.DB) http.HandlerFunc {
 		var columns []Column
 		for rows.Next() {
 			var col Column
-			rows.Scan(&col.Name, &col.Type, &col.Nullable, &col.DefaultValue)
+			rows.Scan(&col.Name, &col.Type, &col.Nullable)
 			columns = append(columns, col)
 		}
 		json.NewEncoder(w).Encode(columns)
@@ -287,7 +306,7 @@ func ForeignKeysHandler(db *sql.DB) http.HandlerFunc {
 			return
 		}
 
-		rows, err := db.Query(\`
+		rows, err := db.Query(`
 			SELECT
 				tc.constraint_name, tc.table_name, kcu.column_name,
 				ccu.table_name, ccu.column_name
@@ -301,7 +320,7 @@ func ForeignKeysHandler(db *sql.DB) http.HandlerFunc {
 			WHERE tc.constraint_type = 'FOREIGN KEY'
 			  AND tc.table_schema = $1
 			  AND (tc.table_name = $2 OR ccu.table_name = $2);
-		\`, schema, table)
+		`, schema, table)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -327,11 +346,9 @@ func ForeignKeysHandler(db *sql.DB) http.HandlerFunc {
 
 func ListSchemasHandler(db *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := db.Query(\`
-			SELECT schema_name
-			FROM information_schema.schemata
-			WHERE schema_name NOT IN ('pg_catalog', 'information_schema');
-		\`)
+		rows, err := db.Query(`
+			SELECT schema_name FROM information_schema.schemata ORDER BY schema_name;
+		`)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
