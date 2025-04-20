@@ -64,7 +64,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	// Initialize Postgres connection
-	dbConn, err := db.InitPostgres("postgres://user:password@postgres:5432/mydb?sslmode=disable")
+	dbConn, err := db.InitPostgres("postgres://postgres:pwd@localhost:5432/postgres?sslmode=disable")
 	if err != nil {
 		log.Fatalf("DB error: %v", err)
 	}
@@ -105,7 +105,7 @@ func main() {
 	mux.HandleFunc("/schema/list_schemas", server.ListSchemasHandler(dbConn))
 
 	// Add database query tools to MCP server
-	
+
 	// 1. Execute Query Tool
 	queryTool := mcp.NewTool("executeQuery",
 		mcp.WithDescription("Execute a SQL query against the database"),
@@ -190,7 +190,7 @@ func main() {
 	)
 
 	// Add tool handlers
-	
+
 	// 1. Execute Query Handler
 	mcpSrv.AddTool(queryTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		query := request.Params.Arguments["query"].(string)
@@ -198,22 +198,22 @@ func main() {
 		if !ok {
 			schema = "public"
 		}
-		
+
 		// Execute the query
 		result, err := executeQuery(dbConn, schema, query)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("Query error: %v", err)), nil
 		}
-		
+
 		// Convert result to JSON string
 		resultJSON, err := json.Marshal(result)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("JSON encoding error: %v", err)), nil
 		}
-		
+
 		return mcp.NewToolResultText(string(resultJSON)), nil
 	})
-	
+
 	// 2. Full Table Schema Handler
 	mcpSrv.AddTool(fullSchemaToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		table := request.Params.Arguments["table"].(string)
@@ -221,44 +221,44 @@ func main() {
 		if !ok {
 			schema = "public"
 		}
-		
+
 		// Create a mock HTTP request to reuse the existing handler logic
 		url := fmt.Sprintf("/schema/full?schema=%s&table=%s", schema, table)
 		req, _ := http.NewRequest("GET", url, nil)
 		rw := newResponseRecorder()
-		
+
 		// Call the existing handler
 		server.FullTableSchemaHandler(dbConn)(rw, req)
-		
+
 		if rw.statusCode != http.StatusOK {
 			return mcp.NewToolResultError(fmt.Sprintf("Error getting table schema: %s", rw.body.String())), nil
 		}
-		
+
 		return mcp.NewToolResultText(rw.body.String()), nil
 	})
-	
+
 	// 3. List Tables Handler
 	mcpSrv.AddTool(listTablesToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		schema, ok := request.Params.Arguments["schema"].(string)
 		if !ok {
 			schema = "public"
 		}
-		
+
 		// Create a mock HTTP request to reuse the existing handler logic
 		url := fmt.Sprintf("/schema/tables?schema=%s", schema)
 		req, _ := http.NewRequest("GET", url, nil)
 		rw := newResponseRecorder()
-		
+
 		// Call the existing handler
 		server.ListTablesHandler(dbConn)(rw, req)
-		
+
 		if rw.statusCode != http.StatusOK {
 			return mcp.NewToolResultError(fmt.Sprintf("Error listing tables: %s", rw.body.String())), nil
 		}
-		
+
 		return mcp.NewToolResultText(rw.body.String()), nil
 	})
-	
+
 	// 4. Describe Table Handler
 	mcpSrv.AddTool(describeTableToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		table := request.Params.Arguments["table"].(string)
@@ -266,22 +266,22 @@ func main() {
 		if !ok {
 			schema = "public"
 		}
-		
+
 		// Create a mock HTTP request to reuse the existing handler logic
 		url := fmt.Sprintf("/schema/describe?schema=%s&table=%s", schema, table)
 		req, _ := http.NewRequest("GET", url, nil)
 		rw := newResponseRecorder()
-		
+
 		// Call the existing handler
 		server.DescribeTableHandler(dbConn)(rw, req)
-		
+
 		if rw.statusCode != http.StatusOK {
 			return mcp.NewToolResultError(fmt.Sprintf("Error describing table: %s", rw.body.String())), nil
 		}
-		
+
 		return mcp.NewToolResultText(rw.body.String()), nil
 	})
-	
+
 	// 5. Sample Rows Handler
 	mcpSrv.AddTool(sampleRowsToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		table := request.Params.Arguments["table"].(string)
@@ -289,22 +289,22 @@ func main() {
 		if !ok {
 			schema = "public"
 		}
-		
+
 		// Create a mock HTTP request to reuse the existing handler logic
 		url := fmt.Sprintf("/schema/sample?schema=%s&table=%s", schema, table)
 		req, _ := http.NewRequest("GET", url, nil)
 		rw := newResponseRecorder()
-		
+
 		// Call the existing handler
 		server.SampleRowsHandler(dbConn)(rw, req)
-		
+
 		if rw.statusCode != http.StatusOK {
 			return mcp.NewToolResultError(fmt.Sprintf("Error getting sample rows: %s", rw.body.String())), nil
 		}
-		
+
 		return mcp.NewToolResultText(rw.body.String()), nil
 	})
-	
+
 	// 6. Foreign Keys Handler
 	mcpSrv.AddTool(foreignKeysToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		table := request.Params.Arguments["table"].(string)
@@ -312,35 +312,35 @@ func main() {
 		if !ok {
 			schema = "public"
 		}
-		
+
 		// Create a mock HTTP request to reuse the existing handler logic
 		url := fmt.Sprintf("/schema/foreign_keys?schema=%s&table=%s", schema, table)
 		req, _ := http.NewRequest("GET", url, nil)
 		rw := newResponseRecorder()
-		
+
 		// Call the existing handler
 		server.ForeignKeysHandler(dbConn)(rw, req)
-		
+
 		if rw.statusCode != http.StatusOK {
 			return mcp.NewToolResultError(fmt.Sprintf("Error getting foreign keys: %s", rw.body.String())), nil
 		}
-		
+
 		return mcp.NewToolResultText(rw.body.String()), nil
 	})
-	
+
 	// 7. List Schemas Handler
 	mcpSrv.AddTool(listSchemasToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Create a mock HTTP request to reuse the existing handler logic
 		req, _ := http.NewRequest("GET", "/schema/list_schemas", nil)
 		rw := newResponseRecorder()
-		
+
 		// Call the existing handler
 		server.ListSchemasHandler(dbConn)(rw, req)
-		
+
 		if rw.statusCode != http.StatusOK {
 			return mcp.NewToolResultError(fmt.Sprintf("Error listing schemas: %s", rw.body.String())), nil
 		}
-		
+
 		return mcp.NewToolResultText(rw.body.String()), nil
 	})
 
@@ -405,11 +405,11 @@ func executeQuery(db *sql.DB, schema, query string) (map[string]interface{}, err
 		for i := range columnVals {
 			columnPtrs[i] = &columnVals[i]
 		}
-		
+
 		if err := rows.Scan(columnPtrs...); err != nil {
 			return nil, fmt.Errorf("scan error: %w", err)
 		}
-		
+
 		rowMap := make(map[string]interface{})
 		for i, col := range cols {
 			rowMap[col] = columnVals[i]

@@ -1,29 +1,9 @@
-version: '3.8'
-
+# docker-compose.yaml
 services:
   db:
-    image: postgres:15
-    container_name: postgres
+    image: postgres:16
     restart: always
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: mydb
+      POSTGRES_PASSWORD: pwd
     ports:
       - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./schema.sql:/docker-entrypoint-initdb.d/1-schema.sql
-      - ./seed.sql:/docker-entrypoint-initdb.d/2-seed.sql
-
-  app:
-    build: .
-    ports:
-      - "8080:8080"
-    env_file:
-      - .env
-    depends_on:
-      - db
-
-volumes:
-  pgdata:
