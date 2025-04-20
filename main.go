@@ -1,518 +1,285 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/tendant/postgres-mcp-sse/internal/db"
 	"github.com/tendant/postgres-mcp-sse/internal/server"
+
+	"github.com/mark3labs/mcp-go/mcp"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
-// Create a custom Hub type for backward compatibility with existing handlers
-type Hub struct {
-	broadcast chan server.Event
+// EventBroadcaster implements the server.HubInterface for compatibility with existing code
+// while also forwarding events to SSE clients via the MCP server
+type EventBroadcaster struct {
+	broadcastCh chan server.Event
+	sseServer   *mcpserver.SSEServer
 }
 
-func NewHub() *Hub {
-	return &Hub{
-		broadcast: make(chan server.Event),
-	}
-}
-
-func (h *Hub) Run() {
-	// Implementation for backward compatibility
-}
-
-// Broadcast returns the broadcast channel for sending events
-func (h *Hub) Broadcast() chan<- server.Event {
-	return h.broadcast
-}
-
-func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Simple SSE implementation for backward compatibility
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
-		return
+// NewEventBroadcaster creates a new EventBroadcaster
+func NewEventBroadcaster(sseServer *mcpserver.SSEServer) *EventBroadcaster {
+	broadcaster := &EventBroadcaster{
+		broadcastCh: make(chan server.Event),
+		sseServer:   sseServer,
 	}
 
-	// Keep the connection open
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case event := <-h.broadcast:
-			data, _ := json.Marshal(event.Data)
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event.Name, data)
-			flusher.Flush()
-		}
-	}
+	// Start a goroutine to handle events
+	go broadcaster.processEvents()
+
+	return broadcaster
 }
 
-// createMCPHandler creates an HTTP handler for the MCP JSON-RPC endpoint
-func createMCPHandler(dbConn *sql.DB, hub *Hub) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Allow CORS
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-		// Handle preflight requests
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-
-		// Only accept POST requests for JSON-RPC
-		if r.Method != "POST" {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-
-		// Read the request body
-		body, err := io.ReadAll(r.Body)
+// processEvents handles incoming events and broadcasts them via SSE
+func (b *EventBroadcaster) processEvents() {
+	for event := range b.broadcastCh {
+		// Convert the event data to JSON
+		eventData, err := json.Marshal(event.Data)
 		if err != nil {
-			http.Error(w, "Error reading request body", http.StatusBadRequest)
-			return
+			log.Printf("Error marshaling event data: %v", err)
+			continue
 		}
 
-		// Parse the JSON-RPC request
-		var request map[string]interface{}
-		if err := json.Unmarshal(body, &request); err != nil {
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		// Handle the request based on the method
-		method, _ := request["method"].(string)
-		params, _ := request["params"].(map[string]interface{})
-		id := request["id"]
-
-		var result interface{}
-
-		switch method {
-		case "initialize":
-			result = handleInitialize()
-		case "tools/list":
-			result = handleToolsList()
-		case "tools/call":
-			// Handle tool calls
-			toolName, _ := params["name"].(string)
-			toolArgs, _ := params["arguments"].(map[string]interface{})
-			result = handleToolCall(dbConn, hub, toolName, toolArgs)
-		default:
-			// Unknown method
-			http.Error(w, fmt.Sprintf("Unknown method: %s", method), http.StatusBadRequest)
-			return
-		}
-
-		// Create the JSON-RPC response
-		response := map[string]interface{}{
-			"jsonrpc": "2.0",
-			"id":      id,
-			"result":  result,
-		}
-
-		// Send the response
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(response)
+		// Create a notification and send it to all clients
+		b.sseServer.SendEvent(event.Name, string(eventData))
 	}
 }
 
-// handleInitialize handles the initialize method for the MCP protocol
-func handleInitialize() interface{} {
-	return map[string]interface{}{
-		"server_info": map[string]interface{}{
-			"name":    "Postgres MCP Server",
-			"version": "1.0.0",
-		},
-		"protocol_version": "2024-11-05",
-		"capabilities": map[string]interface{}{
-			"tools": map[string]interface{}{
-				"list_changed": false,
-			},
-		},
-	}
+// Broadcast returns the channel for sending events
+func (b *EventBroadcaster) Broadcast() chan<- server.Event {
+	return b.broadcastCh
 }
 
-// handleToolsList returns the list of available tools
-func handleToolsList() interface{} {
-	tools := []map[string]interface{}{
-		{
-			"name":        "executeQuery",
-			"description": "Execute a SQL query against the database",
-		},
-		{
-			"name":        "getFullTableSchema",
-			"description": "Get full schema information for a table",
-		},
-		{
-			"name":        "listTables",
-			"description": "List all tables in a schema",
-		},
-		{
-			"name":        "describeTable",
-			"description": "Get column information for a table",
-		},
-		{
-			"name":        "sampleRows",
-			"description": "Get sample rows from a table",
-		},
-		{
-			"name":        "getForeignKeys",
-			"description": "Get foreign key relationships for a table",
-		},
-		{
-			"name":        "listSchemas",
-			"description": "List all schemas in the database",
-		},
-	}
-	return map[string]interface{}{
-		"tools": tools,
-	}
-}
+// registerMCPTools registers all the MCP tools with the MCP server
+func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, broadcaster *EventBroadcaster) {
+	// 1. Execute Query Tool
+	executeQueryTool := mcp.NewTool("executeQuery",
+		mcp.WithDescription("Execute a SQL query against the database"),
+		mcp.WithString("query",
+			mcp.Required(),
+			mcp.Description("SQL query to execute"),
+		),
+		mcp.WithString("schema",
+			mcp.Description("Database schema to use"),
+			mcp.DefaultString("public"),
+		),
+		mcp.WithBoolean("broadcast",
+			mcp.Description("Whether to broadcast the result as an event"),
+		),
+		mcp.WithString("eventName",
+			mcp.Description("Name of the event to broadcast"),
+			mcp.DefaultString("query_result"),
+		),
+	)
 
-// handleToolCall processes a tool call based on the tool name and arguments
-func handleToolCall(dbConn *sql.DB, hub *Hub, toolName string, toolArgs map[string]interface{}) interface{} {
-	switch toolName {
-	case "executeQuery":
-		return handleExecuteQuery(dbConn, hub, toolArgs)
-	case "listSchemas":
-		return handleListSchemas(dbConn)
-	case "listTables":
-		return handleListTables(dbConn, toolArgs)
-	case "getFullTableSchema":
-		return handleGetFullTableSchema(dbConn, toolArgs)
-	case "describeTable":
-		return handleDescribeTable(dbConn, toolArgs)
-	case "sampleRows":
-		return handleSampleRows(dbConn, toolArgs)
-	case "getForeignKeys":
-		return handleGetForeignKeys(dbConn, toolArgs)
-	default:
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("Tool '%s' not implemented yet", toolName),
-				},
-			},
+	mcpServer.AddTool(executeQueryTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		query := request.Params.Arguments["query"].(string)
+		schema, ok := request.Params.Arguments["schema"].(string)
+		if !ok {
+			schema = "public"
 		}
-	}
-}
-
-// handleExecuteQuery handles the executeQuery tool call
-func handleExecuteQuery(dbConn *sql.DB, hub *Hub, toolArgs map[string]interface{}) interface{} {
-	query, _ := toolArgs["query"].(string)
-	schema, ok := toolArgs["schema"].(string)
-	if !ok {
-		schema = "public"
-	}
-	
-	// Check if we should broadcast the results
-	broadcast, _ := toolArgs["broadcast"].(bool)
-	eventName, _ := toolArgs["eventName"].(string)
-	if eventName == "" {
-		eventName = "query_result"
-	}
-
-	// Extract any arguments if provided
-	var args []interface{}
-	if argsVal, ok := toolArgs["args"].([]interface{}); ok {
-		args = argsVal
-	}
-
-	// Execute the query directly using the core function
-	result, err := server.ExecuteQuery(dbConn, schema, query, args)
-	if err != nil {
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("Error: %s", err.Error()),
-				},
-			},
+		broadcast, _ := request.Params.Arguments["broadcast"].(bool)
+		eventName, _ := request.Params.Arguments["eventName"].(string)
+		if eventName == "" {
+			eventName = "query_result"
 		}
-	}
 
-	// If broadcast is requested, send the event
-	if broadcast {
-		hub.Broadcast() <- server.NewEvent(eventName, result)
-	}
-
-	// Convert result to JSON for response
-	resultJSON, _ := json.Marshal(result)
-	return map[string]interface{}{
-		"content": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": string(resultJSON),
-			},
-		},
-	}
-}
-
-// handleListSchemas handles the listSchemas tool call
-func handleListSchemas(dbConn *sql.DB) interface{} {
-	// Call the core function directly
-	schemas, err := server.ListSchemas(dbConn)
-	if err != nil {
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("Error: %s", err.Error()),
-				},
-			},
+		// Execute the query
+		result, err := server.ExecuteQuery(dbConn, schema, query, nil)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Query error: %v", err)), nil
 		}
-	}
 
-	// Convert result to JSON for response
-	resultJSON, _ := json.Marshal(schemas)
-	return map[string]interface{}{
-		"content": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": string(resultJSON),
-			},
-		},
-	}
-}
-
-// handleListTables handles the listTables tool call
-func handleListTables(dbConn *sql.DB, toolArgs map[string]interface{}) interface{} {
-	schema, ok := toolArgs["schema"].(string)
-	if !ok {
-		schema = "public"
-	}
-
-	// Call the core function directly
-	tables, err := server.ListTables(dbConn, schema)
-	if err != nil {
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("Error: %s", err.Error()),
-				},
-			},
+		// Broadcast the result if requested
+		if broadcast {
+			broadcaster.Broadcast() <- server.NewEvent(eventName, result)
 		}
-	}
 
-	// Convert result to JSON for response
-	resultJSON, _ := json.Marshal(tables)
-	return map[string]interface{}{
-		"content": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": string(resultJSON),
-			},
-		},
-	}
-}
+		// Convert result to JSON
+		resultJSON, _ := json.Marshal(result)
+		return mcp.NewToolResultText(string(resultJSON)), nil
+	})
 
-// handleGetFullTableSchema handles the getFullTableSchema tool call
-func handleGetFullTableSchema(dbConn *sql.DB, toolArgs map[string]interface{}) interface{} {
-	table, ok := toolArgs["table"].(string)
-	if !ok || table == "" {
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": "Error: Missing table name",
-				},
-			},
+	// 2. List Schemas Tool
+	listSchemasTool := mcp.NewTool("listSchemas",
+		mcp.WithDescription("List all schemas in the database"),
+	)
+
+	mcpServer.AddTool(listSchemasTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		schemas, err := server.ListSchemas(dbConn)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Error listing schemas: %v", err)), nil
 		}
-	}
 
-	schema, ok := toolArgs["schema"].(string)
-	if !ok {
-		schema = "public"
-	}
+		// Convert result to JSON
+		resultJSON, _ := json.Marshal(schemas)
+		return mcp.NewToolResultText(string(resultJSON)), nil
+	})
 
-	// Call the core function directly
-	result, err := server.GetFullTableSchema(dbConn, schema, table)
-	if err != nil {
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("Error: %s", err.Error()),
-				},
-			},
+	// 3. List Tables Tool
+	listTablesTool := mcp.NewTool("listTables",
+		mcp.WithDescription("List all tables in a schema"),
+		mcp.WithString("schema",
+			mcp.Description("Database schema name"),
+			mcp.DefaultString("public"),
+		),
+	)
+
+	mcpServer.AddTool(listTablesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		schema, ok := request.Params.Arguments["schema"].(string)
+		if !ok {
+			schema = "public"
 		}
-	}
 
-	// Convert result to JSON for response
-	resultJSON, _ := json.Marshal(result)
-	return map[string]interface{}{
-		"content": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": string(resultJSON),
-			},
-		},
-	}
-}
-
-// handleDescribeTable handles the describeTable tool call
-func handleDescribeTable(dbConn *sql.DB, toolArgs map[string]interface{}) interface{} {
-	table, ok := toolArgs["table"].(string)
-	if !ok || table == "" {
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": "Error: Missing table name",
-				},
-			},
+		tables, err := server.ListTables(dbConn, schema)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Error listing tables: %v", err)), nil
 		}
-	}
 
-	schema, ok := toolArgs["schema"].(string)
-	if !ok {
-		schema = "public"
-	}
+		// Convert result to JSON
+		resultJSON, _ := json.Marshal(tables)
+		return mcp.NewToolResultText(string(resultJSON)), nil
+	})
 
-	// Call the core function directly
-	columns, err := server.DescribeTable(dbConn, schema, table)
-	if err != nil {
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("Error: %s", err.Error()),
-				},
-			},
+	// 4. Get Full Table Schema Tool
+	getFullTableSchemaTool := mcp.NewTool("getFullTableSchema",
+		mcp.WithDescription("Get full schema information for a table"),
+		mcp.WithString("table",
+			mcp.Required(),
+			mcp.Description("Table name"),
+		),
+		mcp.WithString("schema",
+			mcp.Description("Database schema name"),
+			mcp.DefaultString("public"),
+		),
+	)
+
+	mcpServer.AddTool(getFullTableSchemaTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		table := request.Params.Arguments["table"].(string)
+		schema, ok := request.Params.Arguments["schema"].(string)
+		if !ok {
+			schema = "public"
 		}
-	}
 
-	// Convert result to JSON for response
-	resultJSON, _ := json.Marshal(columns)
-	return map[string]interface{}{
-		"content": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": string(resultJSON),
-			},
-		},
-	}
-}
-
-// handleSampleRows handles the sampleRows tool call
-func handleSampleRows(dbConn *sql.DB, toolArgs map[string]interface{}) interface{} {
-	table, ok := toolArgs["table"].(string)
-	if !ok || table == "" {
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": "Error: Missing table name",
-				},
-			},
+		result, err := server.GetFullTableSchema(dbConn, schema, table)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Error getting table schema: %v", err)), nil
 		}
-	}
 
-	schema, ok := toolArgs["schema"].(string)
-	if !ok {
-		schema = "public"
-	}
+		// Convert result to JSON
+		resultJSON, _ := json.Marshal(result)
+		return mcp.NewToolResultText(string(resultJSON)), nil
+	})
 
-	// Get limit if provided
-	limit := 5 // Default limit
-	if limitVal, ok := toolArgs["limit"].(float64); ok {
-		limit = int(limitVal)
-	}
+	// 5. Describe Table Tool
+	describeTableTool := mcp.NewTool("describeTable",
+		mcp.WithDescription("Get column information for a table"),
+		mcp.WithString("table",
+			mcp.Required(),
+			mcp.Description("Table name"),
+		),
+		mcp.WithString("schema",
+			mcp.Description("Database schema name"),
+			mcp.DefaultString("public"),
+		),
+	)
 
-	// Call the core function directly
-	result, err := server.SampleRows(dbConn, schema, table, limit)
-	if err != nil {
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("Error: %s", err.Error()),
-				},
-			},
+	mcpServer.AddTool(describeTableTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		table := request.Params.Arguments["table"].(string)
+		schema, ok := request.Params.Arguments["schema"].(string)
+		if !ok {
+			schema = "public"
 		}
-	}
 
-	// Convert result to JSON for response
-	resultJSON, _ := json.Marshal(result)
-	return map[string]interface{}{
-		"content": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": string(resultJSON),
-			},
-		},
-	}
-}
-
-// handleGetForeignKeys handles the getForeignKeys tool call
-func handleGetForeignKeys(dbConn *sql.DB, toolArgs map[string]interface{}) interface{} {
-	table, ok := toolArgs["table"].(string)
-	if !ok || table == "" {
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": "Error: Missing table name",
-				},
-			},
+		columns, err := server.DescribeTable(dbConn, schema, table)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Error describing table: %v", err)), nil
 		}
-	}
 
-	schema, ok := toolArgs["schema"].(string)
-	if !ok {
-		schema = "public"
-	}
+		// Convert result to JSON
+		resultJSON, _ := json.Marshal(columns)
+		return mcp.NewToolResultText(string(resultJSON)), nil
+	})
 
-	// Call the core function directly
-	foreignKeys, err := server.GetForeignKeys(dbConn, schema, table)
-	if err != nil {
-		return map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": fmt.Sprintf("Error: %s", err.Error()),
-				},
-			},
+	// 6. Sample Rows Tool
+	sampleRowsTool := mcp.NewTool("sampleRows",
+		mcp.WithDescription("Get sample rows from a table"),
+		mcp.WithString("table",
+			mcp.Required(),
+			mcp.Description("Table name"),
+		),
+		mcp.WithString("schema",
+			mcp.Description("Database schema name"),
+			mcp.DefaultString("public"),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum number of rows to return"),
+			mcp.DefaultNumber(5),
+		),
+	)
+
+	mcpServer.AddTool(sampleRowsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		table := request.Params.Arguments["table"].(string)
+		schema, ok := request.Params.Arguments["schema"].(string)
+		if !ok {
+			schema = "public"
 		}
-	}
+		limit := 5
+		if limitVal, ok := request.Params.Arguments["limit"].(float64); ok {
+			limit = int(limitVal)
+		}
 
-	// Convert result to JSON for response
-	resultJSON, _ := json.Marshal(foreignKeys)
-	return map[string]interface{}{
-		"content": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": string(resultJSON),
-			},
-		},
-	}
+		result, err := server.SampleRows(dbConn, schema, table, limit)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Error getting sample rows: %v", err)), nil
+		}
+
+		// Convert result to JSON
+		resultJSON, _ := json.Marshal(result)
+		return mcp.NewToolResultText(string(resultJSON)), nil
+	})
+
+	// 7. Get Foreign Keys Tool
+	getForeignKeysTool := mcp.NewTool("getForeignKeys",
+		mcp.WithDescription("Get foreign key relationships for a table"),
+		mcp.WithString("table",
+			mcp.Required(),
+			mcp.Description("Table name"),
+		),
+		mcp.WithString("schema",
+			mcp.Description("Database schema name"),
+			mcp.DefaultString("public"),
+		),
+	)
+
+	mcpServer.AddTool(getForeignKeysTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		table := request.Params.Arguments["table"].(string)
+		schema, ok := request.Params.Arguments["schema"].(string)
+		if !ok {
+			schema = "public"
+		}
+
+		foreignKeys, err := server.GetForeignKeys(dbConn, schema, table)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Error getting foreign keys: %v", err)), nil
+		}
+
+		// Convert result to JSON
+		resultJSON, _ := json.Marshal(foreignKeys)
+		return mcp.NewToolResultText(string(resultJSON)), nil
+	})
 }
 
 // setupRoutes sets up the HTTP routes for the server
-func setupRoutes(mux *http.ServeMux, dbConn *sql.DB, hub *Hub) {
-	// Set up SSE events endpoint for backward compatibility
-	mux.HandleFunc("/events", hub.ServeHTTP)
-
-	// Set up MCP server HTTP handler
-	mux.Handle("/mcp", createMCPHandler(dbConn, hub))
-
+func setupRoutes(mux *http.ServeMux, sseServer *mcpserver.SSEServer, dbConn *sql.DB, broadcaster *EventBroadcaster) {
 	// Set up database query handlers (keep for backward compatibility)
-	mux.HandleFunc("/query/execute", server.ExecuteQueryHandler(dbConn, hub))
+	mux.HandleFunc("/query/execute", server.ExecuteQueryHandler(dbConn, broadcaster))
 	mux.HandleFunc("/schema/full", server.FullTableSchemaHandler(dbConn))
 	mux.HandleFunc("/schema/tables", server.ListTablesHandler(dbConn))
 	mux.HandleFunc("/schema/describe", server.DescribeTableHandler(dbConn))
@@ -529,47 +296,46 @@ func main() {
 	}
 	defer dbConn.Close()
 
-	// Create a Hub for SSE events
-	hub := NewHub()
-	go hub.Run()
+	// Create a new MCP server with logging and recovery middleware
+	mcpServer := mcpserver.NewMCPServer(
+		"Postgres MCP Server",
+		"1.0.0",
+		mcpserver.WithResourceCapabilities(true, true), // Enable SSE and JSON-RPC
+		mcpserver.WithLogging(),
+		mcpserver.WithRecovery(),
+	)
+
+	// Create an SSE server for event streaming
+	sseServer := mcpserver.NewSSEServer(mcpServer,
+		mcpserver.WithSSEEndpoint("/events"),
+		mcpserver.WithMessageEndpoint("/mcp"),
+		mcpserver.WithKeepAlive(true),
+		mcpserver.WithKeepAliveInterval(15 * time.Second),
+	)
+
+	// Create an event broadcaster that adapts to our existing interface
+	broadcaster := NewEventBroadcaster(sseServer)
+
+	// Register all MCP tools
+	registerMCPTools(mcpServer, dbConn, broadcaster)
 
 	// Set up HTTP routes
 	mux := http.NewServeMux()
-	setupRoutes(mux, dbConn, hub)
+	
+	// Add MCP and SSE endpoints
+	// The SSEServer already registers its handlers with the provided mux
+	
+	// Add legacy endpoints
+	setupRoutes(mux, sseServer, dbConn, broadcaster)
 
 	// Start the HTTP server
+	log.Printf("Server running on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
-}
-// responseRecorder is a custom implementation of http.ResponseWriter to capture response data
-type responseRecorder struct {
-	headers    http.Header
-	body       *bytes.Buffer
-	statusCode int
-}
-
-func newResponseRecorder() *responseRecorder {
-	return &responseRecorder{
-		headers:    make(http.Header),
-		body:       new(bytes.Buffer),
-		statusCode: http.StatusOK,
-	}
-}
-
-func (r *responseRecorder) Header() http.Header {
-	return r.headers
-}
-
-func (r *responseRecorder) Write(b []byte) (int, error) {
-	return r.body.Write(b)
-}
-
-func (r *responseRecorder) WriteHeader(statusCode int) {
-	r.statusCode = statusCode
 }
 
 // executeQuery executes a SQL query and returns the results
 func executeQuery(db *sql.DB, schema, query string) (map[string]interface{}, error) {
-	// Set the schema
+	// Set the search path to the specified schema
 	_, err := db.Exec(fmt.Sprintf("SET search_path TO %s", schema))
 	if err != nil {
 		return nil, fmt.Errorf("failed to set schema: %w", err)
