@@ -1,71 +1,117 @@
 #!/bin/bash
 
+# Test both JSON-RPC and SSE functionality
+
+# Start by opening an SSE connection in the background
+echo "Opening SSE connection (in background)..."
+curl -N "http://localhost:8080/events" > /tmp/sse_output.txt 2>&1 &
+SSE_PID=$!
+
+# Give it a moment to establish the connection
+sleep 1
+
 # Initialize the MCP server
 echo "Initializing MCP server..."
-curl -X POST http://localhost:8080/mcp \
+INIT_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp" \
   -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "initialize",
-    "params": {
-      "protocol_version": "2024-11-05",
-      "client_name": "curl-test-client",
-      "client_version": "1.0.0",
-      "capabilities": {}
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 1,
+    \"method\": \"initialize\",
+    \"params\": {
+      \"protocol_version\": \"2024-11-05\",
+      \"client_name\": \"curl-test-client\",
+      \"client_version\": \"1.0.0\",
+      \"capabilities\": {}
     }
-  }'
+  }")
 
-echo -e "\n\nListing available tools..."
-curl -X POST http://localhost:8080/mcp \
-  -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 2,
-    "method": "tools/list",
-    "params": {}
-  }'
+echo "$INIT_RESPONSE"
 
-echo -e "\n\nTesting listSchemas tool..."
-curl -X POST http://localhost:8080/mcp \
+# List available tools
+echo -e "\nListing available tools..."
+TOOLS_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp" \
   -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 3,
-    "method": "tools/call",
-    "params": {
-      "name": "listSchemas",
-      "arguments": {}
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 2,
+    \"method\": \"tools/list\",
+    \"params\": {}
+  }")
+
+echo "$TOOLS_RESPONSE"
+
+# Test listSchemas tool
+echo -e "\nTesting listSchemas tool..."
+SCHEMAS_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 3,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"listSchemas\",
+      \"arguments\": {}
     }
-  }'
+  }")
 
-echo -e "\n\nTesting listTables tool..."
-curl -X POST http://localhost:8080/mcp \
+echo "$SCHEMAS_RESPONSE"
+
+# Test listTables tool
+echo -e "\nTesting listTables tool..."
+TABLES_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp" \
   -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 4,
-    "method": "tools/call",
-    "params": {
-      "name": "listTables",
-      "arguments": {
-        "schema": "public"
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 4,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"listTables\",
+      \"arguments\": {
+        \"schema\": \"public\"
       }
     }
-  }'
+  }")
 
-echo -e "\n\nTesting executeQuery tool..."
-curl -X POST http://localhost:8080/mcp \
+echo "$TABLES_RESPONSE"
+
+# Test executeQuery tool with broadcast to test SSE
+echo -e "\nTesting executeQuery tool with broadcast..."
+QUERY_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp" \
   -H "Content-Type: application/json" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": 5,
-    "method": "tools/call",
-    "params": {
-      "name": "executeQuery",
-      "arguments": {
-        "query": "SELECT current_database(), current_schema()",
-        "schema": "public"
+  -d "{
+    \"jsonrpc\": \"2.0\",
+    \"id\": 5,
+    \"method\": \"tools/call\",
+    \"params\": {
+      \"name\": \"executeQuery\",
+      \"arguments\": {
+        \"query\": \"SELECT current_database(), current_schema()\",
+        \"schema\": \"public\",
+        \"broadcast\": true,
+        \"eventName\": \"test_query_result\"
       }
     }
-  }'
+  }")
+
+echo "$QUERY_RESPONSE"
+
+# Give SSE a moment to receive the broadcast
+sleep 2
+
+# Check if we received any SSE events
+echo -e "\nChecking SSE events..."
+if grep -q "data:" /tmp/sse_output.txt; then
+  echo "SSE events received successfully!"
+  echo "Last few SSE events:"
+  tail -5 /tmp/sse_output.txt
+else
+  echo "No SSE events received."
+fi
+
+# Clean up
+echo -e "\nCleaning up..."
+kill $SSE_PID 2>/dev/null
+rm -f /tmp/sse_output.txt
+
+echo -e "\nTest complete!"

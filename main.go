@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 
@@ -83,8 +84,208 @@ func main() {
 		mcpserver.WithRecovery(),
 	)
 
-	// Create SSE server for MCP
-	sseServer := mcpserver.NewSSEServer(mcpSrv)
+	// Create a simple HTTP handler for MCP
+	mcpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Allow CORS
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		// Handle preflight requests
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Only accept POST requests for JSON-RPC
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		// Read the request body
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Error reading request body", http.StatusBadRequest)
+			return
+		}
+
+		// Parse the JSON-RPC request
+		var request map[string]interface{}
+		if err := json.Unmarshal(body, &request); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		// Handle the request based on the method
+		method, _ := request["method"].(string)
+		params, _ := request["params"].(map[string]interface{})
+		id := request["id"]
+
+		var result interface{}
+
+		switch method {
+		case "initialize":
+			// Handle initialize request
+			result = map[string]interface{}{
+				"server_info": map[string]interface{}{
+					"name":    "Postgres MCP Server",
+					"version": "1.0.0",
+				},
+				"protocol_version": "2024-11-05",
+				"capabilities": map[string]interface{}{
+					"tools": map[string]interface{}{
+						"list_changed": false,
+					},
+				},
+			}
+		case "tools/list":
+			// Get all tools from the MCP server
+			tools := []map[string]interface{}{
+				{
+					"name":        "executeQuery",
+					"description": "Execute a SQL query against the database",
+				},
+				{
+					"name":        "getFullTableSchema",
+					"description": "Get full schema information for a table",
+				},
+				{
+					"name":        "listTables",
+					"description": "List all tables in a schema",
+				},
+				{
+					"name":        "describeTable",
+					"description": "Get column information for a table",
+				},
+				{
+					"name":        "sampleRows",
+					"description": "Get sample rows from a table",
+				},
+				{
+					"name":        "getForeignKeys",
+					"description": "Get foreign key relationships for a table",
+				},
+				{
+					"name":        "listSchemas",
+					"description": "List all schemas in the database",
+				},
+			}
+			result = map[string]interface{}{
+				"tools": tools,
+			}
+		case "tools/call":
+			// Handle tool calls
+			toolName, _ := params["name"].(string)
+			toolArgs, _ := params["arguments"].(map[string]interface{})
+
+			// Process the tool call based on the tool name
+			switch toolName {
+			case "executeQuery":
+				query, _ := toolArgs["query"].(string)
+				schema, ok := toolArgs["schema"].(string)
+				if !ok {
+					schema = "public"
+				}
+				
+				// Check if we should broadcast the results
+				broadcast, _ := toolArgs["broadcast"].(bool)
+				eventName, _ := toolArgs["eventName"].(string)
+				if eventName == "" {
+					eventName = "query_result"
+				}
+
+				// Create a request body for the ExecuteQueryHandler
+				reqBody, _ := json.Marshal(server.QueryRequest{
+					Schema:    schema,
+					Query:     query,
+					Broadcast: broadcast,
+					EventName: eventName,
+				})
+
+				// Create a mock HTTP request to reuse the existing handler logic
+				req, _ := http.NewRequest("POST", "/query/execute", bytes.NewBuffer(reqBody))
+				req.Header.Set("Content-Type", "application/json")
+				rw := newResponseRecorder()
+
+				// Execute the query using the existing handler
+				server.ExecuteQueryHandler(dbConn, hub)(rw, req)
+
+				if rw.statusCode != http.StatusOK {
+					result = map[string]interface{}{
+						"content": []map[string]interface{}{
+							{
+								"type": "text",
+								"text": fmt.Sprintf("Error: %s", rw.body.String()),
+							},
+						},
+					}
+				} else {
+					result = map[string]interface{}{
+						"content": []map[string]interface{}{
+							{
+								"type": "text",
+								"text": rw.body.String(),
+							},
+						},
+					}
+				}
+			case "listSchemas":
+				// Create a mock HTTP request to reuse the existing handler logic
+				req, _ := http.NewRequest("GET", "/schema/list_schemas", nil)
+				rw := newResponseRecorder()
+				server.ListSchemasHandler(dbConn)(rw, req)
+				result = map[string]interface{}{
+					"content": []map[string]interface{}{
+						{
+							"type": "text",
+							"text": rw.body.String(),
+						},
+					},
+				}
+			case "listTables":
+				schema, ok := toolArgs["schema"].(string)
+				if !ok {
+					schema = "public"
+				}
+				req, _ := http.NewRequest("GET", fmt.Sprintf("/schema/tables?schema=%s", schema), nil)
+				rw := newResponseRecorder()
+				server.ListTablesHandler(dbConn)(rw, req)
+				result = map[string]interface{}{
+					"content": []map[string]interface{}{
+						{
+							"type": "text",
+							"text": rw.body.String(),
+						},
+					},
+				}
+			default:
+				result = map[string]interface{}{
+					"content": []map[string]interface{}{
+						{
+							"type": "text",
+							"text": fmt.Sprintf("Tool '%s' not implemented yet", toolName),
+						},
+					},
+				}
+			}
+		default:
+			// Unknown method
+			http.Error(w, fmt.Sprintf("Unknown method: %s", method), http.StatusBadRequest)
+			return
+		}
+
+		// Create the JSON-RPC response
+		response := map[string]interface{}{
+			"jsonrpc": "2.0",
+			"id":      id,
+			"result":  result,
+		}
+
+		// Send the response
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	})
 
 	// Create HTTP server mux
 	mux := http.NewServeMux()
@@ -93,7 +294,7 @@ func main() {
 	mux.HandleFunc("/events", hub.ServeHTTP)
 
 	// Set up MCP server HTTP handler
-	mux.HandleFunc("/mcp", sseServer.ServeHTTP)
+	mux.Handle("/mcp", mcpHandler)
 
 	// Set up database query handlers (keep for backward compatibility)
 	mux.HandleFunc("/query/execute", server.ExecuteQueryHandler(dbConn, hub))
