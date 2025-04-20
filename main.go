@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -12,9 +11,6 @@ import (
 
 	"github.com/tendant/postgres-mcp-sse/internal/db"
 	"github.com/tendant/postgres-mcp-sse/internal/server"
-
-	"github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
 // Create a custom Hub type for backward compatibility with existing handlers
@@ -63,29 +59,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func main() {
-	// Initialize Postgres connection
-	dbConn, err := db.InitPostgres("postgres://postgres:pwd@localhost:5432/postgres?sslmode=disable")
-	if err != nil {
-		log.Fatalf("DB error: %v", err)
-	}
-	defer dbConn.Close()
-
-	// Create a custom Hub for backward compatibility with existing handlers
-	hub := NewHub()
-	go hub.Run()
-
-	// Create a new MCP server with logging and recovery middleware
-	mcpSrv := mcpserver.NewMCPServer(
-		"Postgres MCP Server",
-		"1.0.0",
-		mcpserver.WithResourceCapabilities(true, true),
-		mcpserver.WithLogging(),
-		mcpserver.WithRecovery(),
-	)
-
-	// Create a simple HTTP handler for MCP
-	mcpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// createMCPHandler creates an HTTP handler for the MCP JSON-RPC endpoint
+func createMCPHandler(dbConn *sql.DB, hub *Hub) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		// Allow CORS
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -126,149 +102,14 @@ func main() {
 
 		switch method {
 		case "initialize":
-			// Handle initialize request
-			result = map[string]interface{}{
-				"server_info": map[string]interface{}{
-					"name":    "Postgres MCP Server",
-					"version": "1.0.0",
-				},
-				"protocol_version": "2024-11-05",
-				"capabilities": map[string]interface{}{
-					"tools": map[string]interface{}{
-						"list_changed": false,
-					},
-				},
-			}
+			result = handleInitialize()
 		case "tools/list":
-			// Get all tools from the MCP server
-			tools := []map[string]interface{}{
-				{
-					"name":        "executeQuery",
-					"description": "Execute a SQL query against the database",
-				},
-				{
-					"name":        "getFullTableSchema",
-					"description": "Get full schema information for a table",
-				},
-				{
-					"name":        "listTables",
-					"description": "List all tables in a schema",
-				},
-				{
-					"name":        "describeTable",
-					"description": "Get column information for a table",
-				},
-				{
-					"name":        "sampleRows",
-					"description": "Get sample rows from a table",
-				},
-				{
-					"name":        "getForeignKeys",
-					"description": "Get foreign key relationships for a table",
-				},
-				{
-					"name":        "listSchemas",
-					"description": "List all schemas in the database",
-				},
-			}
-			result = map[string]interface{}{
-				"tools": tools,
-			}
+			result = handleToolsList()
 		case "tools/call":
 			// Handle tool calls
 			toolName, _ := params["name"].(string)
 			toolArgs, _ := params["arguments"].(map[string]interface{})
-
-			// Process the tool call based on the tool name
-			switch toolName {
-			case "executeQuery":
-				query, _ := toolArgs["query"].(string)
-				schema, ok := toolArgs["schema"].(string)
-				if !ok {
-					schema = "public"
-				}
-				
-				// Check if we should broadcast the results
-				broadcast, _ := toolArgs["broadcast"].(bool)
-				eventName, _ := toolArgs["eventName"].(string)
-				if eventName == "" {
-					eventName = "query_result"
-				}
-
-				// Create a request body for the ExecuteQueryHandler
-				reqBody, _ := json.Marshal(server.QueryRequest{
-					Schema:    schema,
-					Query:     query,
-					Broadcast: broadcast,
-					EventName: eventName,
-				})
-
-				// Create a mock HTTP request to reuse the existing handler logic
-				req, _ := http.NewRequest("POST", "/query/execute", bytes.NewBuffer(reqBody))
-				req.Header.Set("Content-Type", "application/json")
-				rw := newResponseRecorder()
-
-				// Execute the query using the existing handler
-				server.ExecuteQueryHandler(dbConn, hub)(rw, req)
-
-				if rw.statusCode != http.StatusOK {
-					result = map[string]interface{}{
-						"content": []map[string]interface{}{
-							{
-								"type": "text",
-								"text": fmt.Sprintf("Error: %s", rw.body.String()),
-							},
-						},
-					}
-				} else {
-					result = map[string]interface{}{
-						"content": []map[string]interface{}{
-							{
-								"type": "text",
-								"text": rw.body.String(),
-							},
-						},
-					}
-				}
-			case "listSchemas":
-				// Create a mock HTTP request to reuse the existing handler logic
-				req, _ := http.NewRequest("GET", "/schema/list_schemas", nil)
-				rw := newResponseRecorder()
-				server.ListSchemasHandler(dbConn)(rw, req)
-				result = map[string]interface{}{
-					"content": []map[string]interface{}{
-						{
-							"type": "text",
-							"text": rw.body.String(),
-						},
-					},
-				}
-			case "listTables":
-				schema, ok := toolArgs["schema"].(string)
-				if !ok {
-					schema = "public"
-				}
-				req, _ := http.NewRequest("GET", fmt.Sprintf("/schema/tables?schema=%s", schema), nil)
-				rw := newResponseRecorder()
-				server.ListTablesHandler(dbConn)(rw, req)
-				result = map[string]interface{}{
-					"content": []map[string]interface{}{
-						{
-							"type": "text",
-							"text": rw.body.String(),
-						},
-					},
-				}
-			default:
-				result = map[string]interface{}{
-					"content": []map[string]interface{}{
-						{
-							"type": "text",
-							"text": fmt.Sprintf("Tool '%s' not implemented yet", toolName),
-						},
-					},
-				}
-			}
+			result = handleToolCall(dbConn, hub, toolName, toolArgs)
 		default:
 			// Unknown method
 			http.Error(w, fmt.Sprintf("Unknown method: %s", method), http.StatusBadRequest)
@@ -285,16 +126,176 @@ func main() {
 		// Send the response
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(response)
+	}
+}
+
+// handleInitialize handles the initialize method for the MCP protocol
+func handleInitialize() interface{} {
+	return map[string]interface{}{
+		"server_info": map[string]interface{}{
+			"name":    "Postgres MCP Server",
+			"version": "1.0.0",
+		},
+		"protocol_version": "2024-11-05",
+		"capabilities": map[string]interface{}{
+			"tools": map[string]interface{}{
+				"list_changed": false,
+			},
+		},
+	}
+}
+
+// handleToolsList returns the list of available tools
+func handleToolsList() interface{} {
+	tools := []map[string]interface{}{
+		{
+			"name":        "executeQuery",
+			"description": "Execute a SQL query against the database",
+		},
+		{
+			"name":        "getFullTableSchema",
+			"description": "Get full schema information for a table",
+		},
+		{
+			"name":        "listTables",
+			"description": "List all tables in a schema",
+		},
+		{
+			"name":        "describeTable",
+			"description": "Get column information for a table",
+		},
+		{
+			"name":        "sampleRows",
+			"description": "Get sample rows from a table",
+		},
+		{
+			"name":        "getForeignKeys",
+			"description": "Get foreign key relationships for a table",
+		},
+		{
+			"name":        "listSchemas",
+			"description": "List all schemas in the database",
+		},
+	}
+	return map[string]interface{}{
+		"tools": tools,
+	}
+}
+
+// handleToolCall processes a tool call based on the tool name and arguments
+func handleToolCall(dbConn *sql.DB, hub *Hub, toolName string, toolArgs map[string]interface{}) interface{} {
+	switch toolName {
+	case "executeQuery":
+		return handleExecuteQuery(dbConn, hub, toolArgs)
+	case "listSchemas":
+		return handleListSchemas(dbConn)
+	case "listTables":
+		return handleListTables(dbConn, toolArgs)
+	default:
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": fmt.Sprintf("Tool '%s' not implemented yet", toolName),
+				},
+			},
+		}
+	}
+}
+
+// handleExecuteQuery handles the executeQuery tool call
+func handleExecuteQuery(dbConn *sql.DB, hub *Hub, toolArgs map[string]interface{}) interface{} {
+	query, _ := toolArgs["query"].(string)
+	schema, ok := toolArgs["schema"].(string)
+	if !ok {
+		schema = "public"
+	}
+	
+	// Check if we should broadcast the results
+	broadcast, _ := toolArgs["broadcast"].(bool)
+	eventName, _ := toolArgs["eventName"].(string)
+	if eventName == "" {
+		eventName = "query_result"
+	}
+
+	// Create a request body for the ExecuteQueryHandler
+	reqBody, _ := json.Marshal(server.QueryRequest{
+		Schema:    schema,
+		Query:     query,
+		Broadcast: broadcast,
+		EventName: eventName,
 	})
 
-	// Create HTTP server mux
-	mux := http.NewServeMux()
+	// Create a mock HTTP request to reuse the existing handler logic
+	req, _ := http.NewRequest("POST", "/query/execute", bytes.NewBuffer(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	rw := newResponseRecorder()
 
+	// Execute the query using the existing handler
+	server.ExecuteQueryHandler(dbConn, hub)(rw, req)
+
+	if rw.statusCode != http.StatusOK {
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": fmt.Sprintf("Error: %s", rw.body.String()),
+				},
+			},
+		}
+	} 
+	return map[string]interface{}{
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": rw.body.String(),
+			},
+		},
+	}
+}
+
+// handleListSchemas handles the listSchemas tool call
+func handleListSchemas(dbConn *sql.DB) interface{} {
+	// Create a mock HTTP request to reuse the existing handler logic
+	req, _ := http.NewRequest("GET", "/schema/list_schemas", nil)
+	rw := newResponseRecorder()
+	server.ListSchemasHandler(dbConn)(rw, req)
+	return map[string]interface{}{
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": rw.body.String(),
+			},
+		},
+	}
+}
+
+// handleListTables handles the listTables tool call
+func handleListTables(dbConn *sql.DB, toolArgs map[string]interface{}) interface{} {
+	schema, ok := toolArgs["schema"].(string)
+	if !ok {
+		schema = "public"
+	}
+	req, _ := http.NewRequest("GET", fmt.Sprintf("/schema/tables?schema=%s", schema), nil)
+	rw := newResponseRecorder()
+	server.ListTablesHandler(dbConn)(rw, req)
+	return map[string]interface{}{
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": rw.body.String(),
+			},
+		},
+	}
+}
+
+// setupRoutes sets up the HTTP routes for the server
+func setupRoutes(mux *http.ServeMux, dbConn *sql.DB, hub *Hub) {
 	// Set up SSE events endpoint for backward compatibility
 	mux.HandleFunc("/events", hub.ServeHTTP)
 
 	// Set up MCP server HTTP handler
-	mux.Handle("/mcp", mcpHandler)
+	mux.Handle("/mcp", createMCPHandler(dbConn, hub))
 
 	// Set up database query handlers (keep for backward compatibility)
 	mux.HandleFunc("/query/execute", server.ExecuteQueryHandler(dbConn, hub))
@@ -304,252 +305,27 @@ func main() {
 	mux.HandleFunc("/schema/sample", server.SampleRowsHandler(dbConn))
 	mux.HandleFunc("/schema/foreign_keys", server.ForeignKeysHandler(dbConn))
 	mux.HandleFunc("/schema/list_schemas", server.ListSchemasHandler(dbConn))
-
-	// Add database query tools to MCP server
-
-	// 1. Execute Query Tool
-	queryTool := mcp.NewTool("executeQuery",
-		mcp.WithDescription("Execute a SQL query against the database"),
-		mcp.WithString("query",
-			mcp.Required(),
-			mcp.Description("SQL query to execute"),
-		),
-		mcp.WithString("schema",
-			mcp.Description("Database schema to use"),
-			mcp.DefaultString("public"),
-		),
-	)
-
-	// 2. Full Table Schema Tool
-	fullSchemaToolTool := mcp.NewTool("getFullTableSchema",
-		mcp.WithDescription("Get full schema information for a table including columns, foreign keys, and sample data"),
-		mcp.WithString("table",
-			mcp.Required(),
-			mcp.Description("Table name"),
-		),
-		mcp.WithString("schema",
-			mcp.Description("Database schema name"),
-			mcp.DefaultString("public"),
-		),
-	)
-
-	// 3. List Tables Tool
-	listTablesToolTool := mcp.NewTool("listTables",
-		mcp.WithDescription("List all tables in a schema"),
-		mcp.WithString("schema",
-			mcp.Description("Database schema name"),
-			mcp.DefaultString("public"),
-		),
-	)
-
-	// 4. Describe Table Tool
-	describeTableToolTool := mcp.NewTool("describeTable",
-		mcp.WithDescription("Get column information for a table"),
-		mcp.WithString("table",
-			mcp.Required(),
-			mcp.Description("Table name"),
-		),
-		mcp.WithString("schema",
-			mcp.Description("Database schema name"),
-			mcp.DefaultString("public"),
-		),
-	)
-
-	// 5. Sample Rows Tool
-	sampleRowsToolTool := mcp.NewTool("sampleRows",
-		mcp.WithDescription("Get sample rows from a table"),
-		mcp.WithString("table",
-			mcp.Required(),
-			mcp.Description("Table name"),
-		),
-		mcp.WithString("schema",
-			mcp.Description("Database schema name"),
-			mcp.DefaultString("public"),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of rows to return"),
-			mcp.DefaultNumber(5),
-		),
-	)
-
-	// 6. Foreign Keys Tool
-	foreignKeysToolTool := mcp.NewTool("getForeignKeys",
-		mcp.WithDescription("Get foreign key relationships for a table"),
-		mcp.WithString("table",
-			mcp.Required(),
-			mcp.Description("Table name"),
-		),
-		mcp.WithString("schema",
-			mcp.Description("Database schema name"),
-			mcp.DefaultString("public"),
-		),
-	)
-
-	// 7. List Schemas Tool
-	listSchemasToolTool := mcp.NewTool("listSchemas",
-		mcp.WithDescription("List all schemas in the database"),
-	)
-
-	// Add tool handlers
-
-	// 1. Execute Query Handler
-	mcpSrv.AddTool(queryTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		query := request.Params.Arguments["query"].(string)
-		schema, ok := request.Params.Arguments["schema"].(string)
-		if !ok {
-			schema = "public"
-		}
-
-		// Execute the query
-		result, err := executeQuery(dbConn, schema, query)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("Query error: %v", err)), nil
-		}
-
-		// Convert result to JSON string
-		resultJSON, err := json.Marshal(result)
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("JSON encoding error: %v", err)), nil
-		}
-
-		return mcp.NewToolResultText(string(resultJSON)), nil
-	})
-
-	// 2. Full Table Schema Handler
-	mcpSrv.AddTool(fullSchemaToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		table := request.Params.Arguments["table"].(string)
-		schema, ok := request.Params.Arguments["schema"].(string)
-		if !ok {
-			schema = "public"
-		}
-
-		// Create a mock HTTP request to reuse the existing handler logic
-		url := fmt.Sprintf("/schema/full?schema=%s&table=%s", schema, table)
-		req, _ := http.NewRequest("GET", url, nil)
-		rw := newResponseRecorder()
-
-		// Call the existing handler
-		server.FullTableSchemaHandler(dbConn)(rw, req)
-
-		if rw.statusCode != http.StatusOK {
-			return mcp.NewToolResultError(fmt.Sprintf("Error getting table schema: %s", rw.body.String())), nil
-		}
-
-		return mcp.NewToolResultText(rw.body.String()), nil
-	})
-
-	// 3. List Tables Handler
-	mcpSrv.AddTool(listTablesToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		schema, ok := request.Params.Arguments["schema"].(string)
-		if !ok {
-			schema = "public"
-		}
-
-		// Create a mock HTTP request to reuse the existing handler logic
-		url := fmt.Sprintf("/schema/tables?schema=%s", schema)
-		req, _ := http.NewRequest("GET", url, nil)
-		rw := newResponseRecorder()
-
-		// Call the existing handler
-		server.ListTablesHandler(dbConn)(rw, req)
-
-		if rw.statusCode != http.StatusOK {
-			return mcp.NewToolResultError(fmt.Sprintf("Error listing tables: %s", rw.body.String())), nil
-		}
-
-		return mcp.NewToolResultText(rw.body.String()), nil
-	})
-
-	// 4. Describe Table Handler
-	mcpSrv.AddTool(describeTableToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		table := request.Params.Arguments["table"].(string)
-		schema, ok := request.Params.Arguments["schema"].(string)
-		if !ok {
-			schema = "public"
-		}
-
-		// Create a mock HTTP request to reuse the existing handler logic
-		url := fmt.Sprintf("/schema/describe?schema=%s&table=%s", schema, table)
-		req, _ := http.NewRequest("GET", url, nil)
-		rw := newResponseRecorder()
-
-		// Call the existing handler
-		server.DescribeTableHandler(dbConn)(rw, req)
-
-		if rw.statusCode != http.StatusOK {
-			return mcp.NewToolResultError(fmt.Sprintf("Error describing table: %s", rw.body.String())), nil
-		}
-
-		return mcp.NewToolResultText(rw.body.String()), nil
-	})
-
-	// 5. Sample Rows Handler
-	mcpSrv.AddTool(sampleRowsToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		table := request.Params.Arguments["table"].(string)
-		schema, ok := request.Params.Arguments["schema"].(string)
-		if !ok {
-			schema = "public"
-		}
-
-		// Create a mock HTTP request to reuse the existing handler logic
-		url := fmt.Sprintf("/schema/sample?schema=%s&table=%s", schema, table)
-		req, _ := http.NewRequest("GET", url, nil)
-		rw := newResponseRecorder()
-
-		// Call the existing handler
-		server.SampleRowsHandler(dbConn)(rw, req)
-
-		if rw.statusCode != http.StatusOK {
-			return mcp.NewToolResultError(fmt.Sprintf("Error getting sample rows: %s", rw.body.String())), nil
-		}
-
-		return mcp.NewToolResultText(rw.body.String()), nil
-	})
-
-	// 6. Foreign Keys Handler
-	mcpSrv.AddTool(foreignKeysToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		table := request.Params.Arguments["table"].(string)
-		schema, ok := request.Params.Arguments["schema"].(string)
-		if !ok {
-			schema = "public"
-		}
-
-		// Create a mock HTTP request to reuse the existing handler logic
-		url := fmt.Sprintf("/schema/foreign_keys?schema=%s&table=%s", schema, table)
-		req, _ := http.NewRequest("GET", url, nil)
-		rw := newResponseRecorder()
-
-		// Call the existing handler
-		server.ForeignKeysHandler(dbConn)(rw, req)
-
-		if rw.statusCode != http.StatusOK {
-			return mcp.NewToolResultError(fmt.Sprintf("Error getting foreign keys: %s", rw.body.String())), nil
-		}
-
-		return mcp.NewToolResultText(rw.body.String()), nil
-	})
-
-	// 7. List Schemas Handler
-	mcpSrv.AddTool(listSchemasToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		// Create a mock HTTP request to reuse the existing handler logic
-		req, _ := http.NewRequest("GET", "/schema/list_schemas", nil)
-		rw := newResponseRecorder()
-
-		// Call the existing handler
-		server.ListSchemasHandler(dbConn)(rw, req)
-
-		if rw.statusCode != http.StatusOK {
-			return mcp.NewToolResultError(fmt.Sprintf("Error listing schemas: %s", rw.body.String())), nil
-		}
-
-		return mcp.NewToolResultText(rw.body.String()), nil
-	})
-
-	// Start the HTTP server
-	log.Println("Server running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
 }
 
+func main() {
+	// Initialize Postgres connection
+	dbConn, err := db.InitPostgres("postgres://postgres:pwd@localhost:5432/postgres?sslmode=disable")
+	if err != nil {
+		log.Fatalf("DB error: %v", err)
+	}
+	defer dbConn.Close()
+
+	// Create a Hub for SSE events
+	hub := NewHub()
+	go hub.Run()
+
+	// Set up HTTP routes
+	mux := http.NewServeMux()
+	setupRoutes(mux, dbConn, hub)
+
+	// Start the HTTP server
+	log.Fatal(http.ListenAndServe(":8080", mux))
+}
 // responseRecorder is a custom implementation of http.ResponseWriter to capture response data
 type responseRecorder struct {
 	headers    http.Header
