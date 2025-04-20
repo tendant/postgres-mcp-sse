@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY,
+  email TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+  id UUID PRIMARY KEY,
+  user_id UUID REFERENCES users(id),
+  amount NUMERIC NOT NULL,
+  created_at TIMESTAMP DEFAULT now()
+);
