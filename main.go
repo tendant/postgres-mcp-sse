@@ -191,6 +191,14 @@ func handleToolCall(dbConn *sql.DB, hub *Hub, toolName string, toolArgs map[stri
 		return handleListSchemas(dbConn)
 	case "listTables":
 		return handleListTables(dbConn, toolArgs)
+	case "getFullTableSchema":
+		return handleGetFullTableSchema(dbConn, toolArgs)
+	case "describeTable":
+		return handleDescribeTable(dbConn, toolArgs)
+	case "sampleRows":
+		return handleSampleRows(dbConn, toolArgs)
+	case "getForeignKeys":
+		return handleGetForeignKeys(dbConn, toolArgs)
 	default:
 		return map[string]interface{}{
 			"content": []map[string]interface{}{
@@ -218,37 +226,37 @@ func handleExecuteQuery(dbConn *sql.DB, hub *Hub, toolArgs map[string]interface{
 		eventName = "query_result"
 	}
 
-	// Create a request body for the ExecuteQueryHandler
-	reqBody, _ := json.Marshal(server.QueryRequest{
-		Schema:    schema,
-		Query:     query,
-		Broadcast: broadcast,
-		EventName: eventName,
-	})
+	// Extract any arguments if provided
+	var args []interface{}
+	if argsVal, ok := toolArgs["args"].([]interface{}); ok {
+		args = argsVal
+	}
 
-	// Create a mock HTTP request to reuse the existing handler logic
-	req, _ := http.NewRequest("POST", "/query/execute", bytes.NewBuffer(reqBody))
-	req.Header.Set("Content-Type", "application/json")
-	rw := newResponseRecorder()
-
-	// Execute the query using the existing handler
-	server.ExecuteQueryHandler(dbConn, hub)(rw, req)
-
-	if rw.statusCode != http.StatusOK {
+	// Execute the query directly using the core function
+	result, err := server.ExecuteQuery(dbConn, schema, query, args)
+	if err != nil {
 		return map[string]interface{}{
 			"content": []map[string]interface{}{
 				{
 					"type": "text",
-					"text": fmt.Sprintf("Error: %s", rw.body.String()),
+					"text": fmt.Sprintf("Error: %s", err.Error()),
 				},
 			},
 		}
-	} 
+	}
+
+	// If broadcast is requested, send the event
+	if broadcast {
+		hub.Broadcast() <- server.NewEvent(eventName, result)
+	}
+
+	// Convert result to JSON for response
+	resultJSON, _ := json.Marshal(result)
 	return map[string]interface{}{
 		"content": []map[string]interface{}{
 			{
 				"type": "text",
-				"text": rw.body.String(),
+				"text": string(resultJSON),
 			},
 		},
 	}
@@ -256,15 +264,26 @@ func handleExecuteQuery(dbConn *sql.DB, hub *Hub, toolArgs map[string]interface{
 
 // handleListSchemas handles the listSchemas tool call
 func handleListSchemas(dbConn *sql.DB) interface{} {
-	// Create a mock HTTP request to reuse the existing handler logic
-	req, _ := http.NewRequest("GET", "/schema/list_schemas", nil)
-	rw := newResponseRecorder()
-	server.ListSchemasHandler(dbConn)(rw, req)
+	// Call the core function directly
+	schemas, err := server.ListSchemas(dbConn)
+	if err != nil {
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": fmt.Sprintf("Error: %s", err.Error()),
+				},
+			},
+		}
+	}
+
+	// Convert result to JSON for response
+	resultJSON, _ := json.Marshal(schemas)
 	return map[string]interface{}{
 		"content": []map[string]interface{}{
 			{
 				"type": "text",
-				"text": rw.body.String(),
+				"text": string(resultJSON),
 			},
 		},
 	}
@@ -276,14 +295,209 @@ func handleListTables(dbConn *sql.DB, toolArgs map[string]interface{}) interface
 	if !ok {
 		schema = "public"
 	}
-	req, _ := http.NewRequest("GET", fmt.Sprintf("/schema/tables?schema=%s", schema), nil)
-	rw := newResponseRecorder()
-	server.ListTablesHandler(dbConn)(rw, req)
+
+	// Call the core function directly
+	tables, err := server.ListTables(dbConn, schema)
+	if err != nil {
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": fmt.Sprintf("Error: %s", err.Error()),
+				},
+			},
+		}
+	}
+
+	// Convert result to JSON for response
+	resultJSON, _ := json.Marshal(tables)
 	return map[string]interface{}{
 		"content": []map[string]interface{}{
 			{
 				"type": "text",
-				"text": rw.body.String(),
+				"text": string(resultJSON),
+			},
+		},
+	}
+}
+
+// handleGetFullTableSchema handles the getFullTableSchema tool call
+func handleGetFullTableSchema(dbConn *sql.DB, toolArgs map[string]interface{}) interface{} {
+	table, ok := toolArgs["table"].(string)
+	if !ok || table == "" {
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": "Error: Missing table name",
+				},
+			},
+		}
+	}
+
+	schema, ok := toolArgs["schema"].(string)
+	if !ok {
+		schema = "public"
+	}
+
+	// Call the core function directly
+	result, err := server.GetFullTableSchema(dbConn, schema, table)
+	if err != nil {
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": fmt.Sprintf("Error: %s", err.Error()),
+				},
+			},
+		}
+	}
+
+	// Convert result to JSON for response
+	resultJSON, _ := json.Marshal(result)
+	return map[string]interface{}{
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": string(resultJSON),
+			},
+		},
+	}
+}
+
+// handleDescribeTable handles the describeTable tool call
+func handleDescribeTable(dbConn *sql.DB, toolArgs map[string]interface{}) interface{} {
+	table, ok := toolArgs["table"].(string)
+	if !ok || table == "" {
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": "Error: Missing table name",
+				},
+			},
+		}
+	}
+
+	schema, ok := toolArgs["schema"].(string)
+	if !ok {
+		schema = "public"
+	}
+
+	// Call the core function directly
+	columns, err := server.DescribeTable(dbConn, schema, table)
+	if err != nil {
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": fmt.Sprintf("Error: %s", err.Error()),
+				},
+			},
+		}
+	}
+
+	// Convert result to JSON for response
+	resultJSON, _ := json.Marshal(columns)
+	return map[string]interface{}{
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": string(resultJSON),
+			},
+		},
+	}
+}
+
+// handleSampleRows handles the sampleRows tool call
+func handleSampleRows(dbConn *sql.DB, toolArgs map[string]interface{}) interface{} {
+	table, ok := toolArgs["table"].(string)
+	if !ok || table == "" {
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": "Error: Missing table name",
+				},
+			},
+		}
+	}
+
+	schema, ok := toolArgs["schema"].(string)
+	if !ok {
+		schema = "public"
+	}
+
+	// Get limit if provided
+	limit := 5 // Default limit
+	if limitVal, ok := toolArgs["limit"].(float64); ok {
+		limit = int(limitVal)
+	}
+
+	// Call the core function directly
+	result, err := server.SampleRows(dbConn, schema, table, limit)
+	if err != nil {
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": fmt.Sprintf("Error: %s", err.Error()),
+				},
+			},
+		}
+	}
+
+	// Convert result to JSON for response
+	resultJSON, _ := json.Marshal(result)
+	return map[string]interface{}{
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": string(resultJSON),
+			},
+		},
+	}
+}
+
+// handleGetForeignKeys handles the getForeignKeys tool call
+func handleGetForeignKeys(dbConn *sql.DB, toolArgs map[string]interface{}) interface{} {
+	table, ok := toolArgs["table"].(string)
+	if !ok || table == "" {
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": "Error: Missing table name",
+				},
+			},
+		}
+	}
+
+	schema, ok := toolArgs["schema"].(string)
+	if !ok {
+		schema = "public"
+	}
+
+	// Call the core function directly
+	foreignKeys, err := server.GetForeignKeys(dbConn, schema, table)
+	if err != nil {
+		return map[string]interface{}{
+			"content": []map[string]interface{}{
+				{
+					"type": "text",
+					"text": fmt.Sprintf("Error: %s", err.Error()),
+				},
+			},
+		}
+	}
+
+	// Convert result to JSON for response
+	resultJSON, _ := json.Marshal(foreignKeys)
+	return map[string]interface{}{
+		"content": []map[string]interface{}{
+			{
+				"type": "text",
+				"text": string(resultJSON),
 			},
 		},
 	}
