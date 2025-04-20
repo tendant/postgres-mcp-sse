@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -94,7 +95,7 @@ func main() {
 	// Set up MCP server HTTP handler
 	mux.HandleFunc("/mcp", sseServer.ServeHTTP)
 
-	// Set up database query handlers
+	// Set up database query handlers (keep for backward compatibility)
 	mux.HandleFunc("/query/execute", server.ExecuteQueryHandler(dbConn, hub))
 	mux.HandleFunc("/schema/full", server.FullTableSchemaHandler(dbConn))
 	mux.HandleFunc("/schema/tables", server.ListTablesHandler(dbConn))
@@ -103,7 +104,9 @@ func main() {
 	mux.HandleFunc("/schema/foreign_keys", server.ForeignKeysHandler(dbConn))
 	mux.HandleFunc("/schema/list_schemas", server.ListSchemasHandler(dbConn))
 
-	// Add database query tool to MCP server
+	// Add database query tools to MCP server
+	
+	// 1. Execute Query Tool
 	queryTool := mcp.NewTool("executeQuery",
 		mcp.WithDescription("Execute a SQL query against the database"),
 		mcp.WithString("query",
@@ -116,7 +119,79 @@ func main() {
 		),
 	)
 
-	// Add the query tool handler
+	// 2. Full Table Schema Tool
+	fullSchemaToolTool := mcp.NewTool("getFullTableSchema",
+		mcp.WithDescription("Get full schema information for a table including columns, foreign keys, and sample data"),
+		mcp.WithString("table",
+			mcp.Required(),
+			mcp.Description("Table name"),
+		),
+		mcp.WithString("schema",
+			mcp.Description("Database schema name"),
+			mcp.DefaultString("public"),
+		),
+	)
+
+	// 3. List Tables Tool
+	listTablesToolTool := mcp.NewTool("listTables",
+		mcp.WithDescription("List all tables in a schema"),
+		mcp.WithString("schema",
+			mcp.Description("Database schema name"),
+			mcp.DefaultString("public"),
+		),
+	)
+
+	// 4. Describe Table Tool
+	describeTableToolTool := mcp.NewTool("describeTable",
+		mcp.WithDescription("Get column information for a table"),
+		mcp.WithString("table",
+			mcp.Required(),
+			mcp.Description("Table name"),
+		),
+		mcp.WithString("schema",
+			mcp.Description("Database schema name"),
+			mcp.DefaultString("public"),
+		),
+	)
+
+	// 5. Sample Rows Tool
+	sampleRowsToolTool := mcp.NewTool("sampleRows",
+		mcp.WithDescription("Get sample rows from a table"),
+		mcp.WithString("table",
+			mcp.Required(),
+			mcp.Description("Table name"),
+		),
+		mcp.WithString("schema",
+			mcp.Description("Database schema name"),
+			mcp.DefaultString("public"),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum number of rows to return"),
+			mcp.DefaultNumber(5),
+		),
+	)
+
+	// 6. Foreign Keys Tool
+	foreignKeysToolTool := mcp.NewTool("getForeignKeys",
+		mcp.WithDescription("Get foreign key relationships for a table"),
+		mcp.WithString("table",
+			mcp.Required(),
+			mcp.Description("Table name"),
+		),
+		mcp.WithString("schema",
+			mcp.Description("Database schema name"),
+			mcp.DefaultString("public"),
+		),
+	)
+
+	// 7. List Schemas Tool
+	listSchemasToolTool := mcp.NewTool("listSchemas",
+		mcp.WithDescription("List all schemas in the database"),
+	)
+
+	// Add tool handlers
+	
+	// 1. Execute Query Handler
 	mcpSrv.AddTool(queryTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		query := request.Params.Arguments["query"].(string)
 		schema, ok := request.Params.Arguments["schema"].(string)
@@ -138,10 +213,167 @@ func main() {
 		
 		return mcp.NewToolResultText(string(resultJSON)), nil
 	})
+	
+	// 2. Full Table Schema Handler
+	mcpSrv.AddTool(fullSchemaToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		table := request.Params.Arguments["table"].(string)
+		schema, ok := request.Params.Arguments["schema"].(string)
+		if !ok {
+			schema = "public"
+		}
+		
+		// Create a mock HTTP request to reuse the existing handler logic
+		url := fmt.Sprintf("/schema/full?schema=%s&table=%s", schema, table)
+		req, _ := http.NewRequest("GET", url, nil)
+		rw := newResponseRecorder()
+		
+		// Call the existing handler
+		server.FullTableSchemaHandler(dbConn)(rw, req)
+		
+		if rw.statusCode != http.StatusOK {
+			return mcp.NewToolResultError(fmt.Sprintf("Error getting table schema: %s", rw.body.String())), nil
+		}
+		
+		return mcp.NewToolResultText(rw.body.String()), nil
+	})
+	
+	// 3. List Tables Handler
+	mcpSrv.AddTool(listTablesToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		schema, ok := request.Params.Arguments["schema"].(string)
+		if !ok {
+			schema = "public"
+		}
+		
+		// Create a mock HTTP request to reuse the existing handler logic
+		url := fmt.Sprintf("/schema/tables?schema=%s", schema)
+		req, _ := http.NewRequest("GET", url, nil)
+		rw := newResponseRecorder()
+		
+		// Call the existing handler
+		server.ListTablesHandler(dbConn)(rw, req)
+		
+		if rw.statusCode != http.StatusOK {
+			return mcp.NewToolResultError(fmt.Sprintf("Error listing tables: %s", rw.body.String())), nil
+		}
+		
+		return mcp.NewToolResultText(rw.body.String()), nil
+	})
+	
+	// 4. Describe Table Handler
+	mcpSrv.AddTool(describeTableToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		table := request.Params.Arguments["table"].(string)
+		schema, ok := request.Params.Arguments["schema"].(string)
+		if !ok {
+			schema = "public"
+		}
+		
+		// Create a mock HTTP request to reuse the existing handler logic
+		url := fmt.Sprintf("/schema/describe?schema=%s&table=%s", schema, table)
+		req, _ := http.NewRequest("GET", url, nil)
+		rw := newResponseRecorder()
+		
+		// Call the existing handler
+		server.DescribeTableHandler(dbConn)(rw, req)
+		
+		if rw.statusCode != http.StatusOK {
+			return mcp.NewToolResultError(fmt.Sprintf("Error describing table: %s", rw.body.String())), nil
+		}
+		
+		return mcp.NewToolResultText(rw.body.String()), nil
+	})
+	
+	// 5. Sample Rows Handler
+	mcpSrv.AddTool(sampleRowsToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		table := request.Params.Arguments["table"].(string)
+		schema, ok := request.Params.Arguments["schema"].(string)
+		if !ok {
+			schema = "public"
+		}
+		
+		// Create a mock HTTP request to reuse the existing handler logic
+		url := fmt.Sprintf("/schema/sample?schema=%s&table=%s", schema, table)
+		req, _ := http.NewRequest("GET", url, nil)
+		rw := newResponseRecorder()
+		
+		// Call the existing handler
+		server.SampleRowsHandler(dbConn)(rw, req)
+		
+		if rw.statusCode != http.StatusOK {
+			return mcp.NewToolResultError(fmt.Sprintf("Error getting sample rows: %s", rw.body.String())), nil
+		}
+		
+		return mcp.NewToolResultText(rw.body.String()), nil
+	})
+	
+	// 6. Foreign Keys Handler
+	mcpSrv.AddTool(foreignKeysToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		table := request.Params.Arguments["table"].(string)
+		schema, ok := request.Params.Arguments["schema"].(string)
+		if !ok {
+			schema = "public"
+		}
+		
+		// Create a mock HTTP request to reuse the existing handler logic
+		url := fmt.Sprintf("/schema/foreign_keys?schema=%s&table=%s", schema, table)
+		req, _ := http.NewRequest("GET", url, nil)
+		rw := newResponseRecorder()
+		
+		// Call the existing handler
+		server.ForeignKeysHandler(dbConn)(rw, req)
+		
+		if rw.statusCode != http.StatusOK {
+			return mcp.NewToolResultError(fmt.Sprintf("Error getting foreign keys: %s", rw.body.String())), nil
+		}
+		
+		return mcp.NewToolResultText(rw.body.String()), nil
+	})
+	
+	// 7. List Schemas Handler
+	mcpSrv.AddTool(listSchemasToolTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Create a mock HTTP request to reuse the existing handler logic
+		req, _ := http.NewRequest("GET", "/schema/list_schemas", nil)
+		rw := newResponseRecorder()
+		
+		// Call the existing handler
+		server.ListSchemasHandler(dbConn)(rw, req)
+		
+		if rw.statusCode != http.StatusOK {
+			return mcp.NewToolResultError(fmt.Sprintf("Error listing schemas: %s", rw.body.String())), nil
+		}
+		
+		return mcp.NewToolResultText(rw.body.String()), nil
+	})
 
 	// Start the HTTP server
 	log.Println("Server running on :8080")
 	log.Fatal(http.ListenAndServe(":8080", mux))
+}
+
+// responseRecorder is a custom implementation of http.ResponseWriter to capture response data
+type responseRecorder struct {
+	headers    http.Header
+	body       *bytes.Buffer
+	statusCode int
+}
+
+func newResponseRecorder() *responseRecorder {
+	return &responseRecorder{
+		headers:    make(http.Header),
+		body:       new(bytes.Buffer),
+		statusCode: http.StatusOK,
+	}
+}
+
+func (r *responseRecorder) Header() http.Header {
+	return r.headers
+}
+
+func (r *responseRecorder) Write(b []byte) (int, error) {
+	return r.body.Write(b)
+}
+
+func (r *responseRecorder) WriteHeader(statusCode int) {
+	r.statusCode = statusCode
 }
 
 // executeQuery executes a SQL query and returns the results
