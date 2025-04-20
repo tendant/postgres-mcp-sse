@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/tendant/postgres-mcp-sse/internal/db"
 	"github.com/tendant/postgres-mcp-sse/internal/server"
@@ -285,7 +286,11 @@ func setupRoutes(mux *http.ServeMux, dbConn *sql.DB, hub *CustomHub) {
 
 func main() {
 	// Initialize Postgres connection
-	dbConn, err := db.InitPostgres("postgres://postgres:pwd@localhost:5432/postgres?sslmode=disable")
+	dsn := os.Getenv("DB_DSN")
+	if dsn == "" {
+		dsn = "postgres://postgres:pwd@localhost:5432/postgres?sslmode=disable"
+	}
+	dbConn, err := db.InitPostgres(dsn)
 	if err != nil {
 		log.Fatalf("DB error: %v", err)
 	}

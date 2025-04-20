@@ -7,3 +7,16 @@ services:
       POSTGRES_PASSWORD: pwd
     ports:
       - "5432:5432"
+    volumes:
+      - ./schema.sql:/docker-entrypoint-initdb.d/1_schema.sql
+      - ./seed.sql:/docker-entrypoint-initdb.d/2_seed.sql
+
+  app:
+    build: .
+    restart: always
+    depends_on:
+      - db
+    ports:
+      - "8080:8080"
+    environment:
+      DB_DSN: postgres://postgres:pwd@db:5432/postgres?sslmode=disable
