@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"time"
 
 	"github.com/tendant/postgres-mcp-sse/internal/db"
 	"github.com/tendant/postgres-mcp-sse/internal/server"
@@ -16,48 +15,44 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
-// EventBroadcaster implements the server.HubInterface for compatibility with existing code
-// while also forwarding events to SSE clients via the MCP server
-type EventBroadcaster struct {
+// CustomHub implements the server.HubInterface for compatibility with existing code
+type CustomHub struct {
 	broadcastCh chan server.Event
-	sseServer   *mcpserver.SSEServer
+	events      chan<- server.Event
 }
 
-// NewEventBroadcaster creates a new EventBroadcaster
-func NewEventBroadcaster(sseServer *mcpserver.SSEServer) *EventBroadcaster {
-	broadcaster := &EventBroadcaster{
-		broadcastCh: make(chan server.Event),
-		sseServer:   sseServer,
+// NewCustomHub creates a new CustomHub
+func NewCustomHub() *CustomHub {
+	ch := make(chan server.Event)
+	hub := &CustomHub{
+		broadcastCh: ch,
+		events:      ch,
 	}
 
-	// Start a goroutine to handle events
-	go broadcaster.processEvents()
+	// Start a goroutine to process events
+	go hub.processEvents()
 
-	return broadcaster
+	return hub
 }
 
-// processEvents handles incoming events and broadcasts them via SSE
-func (b *EventBroadcaster) processEvents() {
-	for event := range b.broadcastCh {
-		// Convert the event data to JSON
-		eventData, err := json.Marshal(event.Data)
-		if err != nil {
-			log.Printf("Error marshaling event data: %v", err)
-			continue
-		}
+// processEvents handles incoming events
+func (h *CustomHub) processEvents() {
+	for event := range h.broadcastCh {
+		// Just log the event for now
+		log.Printf("Event broadcast: %s", event.Name)
 
-		// Create a notification and send it to all clients
-		b.sseServer.SendEvent(event.Name, string(eventData))
+		// In a real implementation, we would send this to connected clients
+		// but for now we'll just log it
 	}
 }
 
 // Broadcast returns the channel for sending events
-func (b *EventBroadcaster) Broadcast() chan<- server.Event {
-	return b.broadcastCh
+func (h *CustomHub) Broadcast() chan<- server.Event {
+	return h.events
 }
 
 // registerMCPTools registers all the MCP tools with the MCP server
-func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, broadcaster *EventBroadcaster) {
+func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *CustomHub) {
 	// 1. Execute Query Tool
 	executeQueryTool := mcp.NewTool("executeQuery",
 		mcp.WithDescription("Execute a SQL query against the database"),
@@ -98,7 +93,7 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, broadcaste
 
 		// Broadcast the result if requested
 		if broadcast {
-			broadcaster.Broadcast() <- server.NewEvent(eventName, result)
+			hub.Broadcast() <- server.NewEvent(eventName, result)
 		}
 
 		// Convert result to JSON
@@ -277,9 +272,9 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, broadcaste
 }
 
 // setupRoutes sets up the HTTP routes for the server
-func setupRoutes(mux *http.ServeMux, sseServer *mcpserver.SSEServer, dbConn *sql.DB, broadcaster *EventBroadcaster) {
+func setupRoutes(mux *http.ServeMux, dbConn *sql.DB, hub *CustomHub) {
 	// Set up database query handlers (keep for backward compatibility)
-	mux.HandleFunc("/query/execute", server.ExecuteQueryHandler(dbConn, broadcaster))
+	mux.HandleFunc("/query/execute", server.ExecuteQueryHandler(dbConn, hub))
 	mux.HandleFunc("/schema/full", server.FullTableSchemaHandler(dbConn))
 	mux.HandleFunc("/schema/tables", server.ListTablesHandler(dbConn))
 	mux.HandleFunc("/schema/describe", server.DescribeTableHandler(dbConn))
@@ -296,6 +291,9 @@ func main() {
 	}
 	defer dbConn.Close()
 
+	// Create a custom hub for event broadcasting
+	hub := NewCustomHub()
+
 	// Create a new MCP server with logging and recovery middleware
 	mcpServer := mcpserver.NewMCPServer(
 		"Postgres MCP Server",
@@ -305,32 +303,36 @@ func main() {
 		mcpserver.WithRecovery(),
 	)
 
-	// Create an SSE server for event streaming
-	sseServer := mcpserver.NewSSEServer(mcpServer,
+	// Create a test server that wraps our MCP server
+	testServer := mcpserver.NewTestServer(mcpServer,
 		mcpserver.WithSSEEndpoint("/events"),
 		mcpserver.WithMessageEndpoint("/mcp"),
-		mcpserver.WithKeepAlive(true),
-		mcpserver.WithKeepAliveInterval(15 * time.Second),
 	)
 
-	// Create an event broadcaster that adapts to our existing interface
-	broadcaster := NewEventBroadcaster(sseServer)
-
 	// Register all MCP tools
-	registerMCPTools(mcpServer, dbConn, broadcaster)
+	registerMCPTools(mcpServer, dbConn, hub)
 
 	// Set up HTTP routes
 	mux := http.NewServeMux()
-	
-	// Add MCP and SSE endpoints
-	// The SSEServer already registers its handlers with the provided mux
-	
+
 	// Add legacy endpoints
-	setupRoutes(mux, sseServer, dbConn, broadcaster)
+	setupRoutes(mux, dbConn, hub)
+
+	// Create a server that serves both MCP and our legacy endpoints
+	server := &http.Server{
+		Addr: ":8080",
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/mcp" || r.URL.Path == "/events" {
+				testServer.Config.Handler.ServeHTTP(w, r)
+			} else {
+				mux.ServeHTTP(w, r)
+			}
+		}),
+	}
 
 	// Start the HTTP server
 	log.Printf("Server running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	log.Fatal(server.ListenAndServe())
 }
 
 // executeQuery executes a SQL query and returns the results

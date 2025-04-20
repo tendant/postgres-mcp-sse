@@ -8,11 +8,21 @@ curl -N "http://localhost:8080/events" > /tmp/sse_output.txt 2>&1 &
 SSE_PID=$!
 
 # Give it a moment to establish the connection
-sleep 1
+sleep 2
+
+# Extract the session ID from the SSE output
+if grep -q "sessionId=" /tmp/sse_output.txt; then
+  SESSION_ID=$(grep -o "sessionId=[^\"&]*" /tmp/sse_output.txt | head -1 | cut -d= -f2)
+  echo "Using server-provided session ID: $SESSION_ID"
+else
+  echo "Error: Could not extract session ID from SSE output"
+  cat /tmp/sse_output.txt
+  exit 1
+fi
 
 # Initialize the MCP server
 echo "Initializing MCP server..."
-INIT_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp" \
+INIT_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp?sessionId=$SESSION_ID" \
   -H "Content-Type: application/json" \
   -d "{
     \"jsonrpc\": \"2.0\",
@@ -30,7 +40,7 @@ echo "$INIT_RESPONSE"
 
 # List available tools
 echo -e "\nListing available tools..."
-TOOLS_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp" \
+TOOLS_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp?sessionId=$SESSION_ID" \
   -H "Content-Type: application/json" \
   -d "{
     \"jsonrpc\": \"2.0\",
@@ -43,7 +53,7 @@ echo "$TOOLS_RESPONSE"
 
 # Test listSchemas tool
 echo -e "\nTesting listSchemas tool..."
-SCHEMAS_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp" \
+SCHEMAS_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp?sessionId=$SESSION_ID" \
   -H "Content-Type: application/json" \
   -d "{
     \"jsonrpc\": \"2.0\",
@@ -59,7 +69,7 @@ echo "$SCHEMAS_RESPONSE"
 
 # Test listTables tool
 echo -e "\nTesting listTables tool..."
-TABLES_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp" \
+TABLES_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp?sessionId=$SESSION_ID" \
   -H "Content-Type: application/json" \
   -d "{
     \"jsonrpc\": \"2.0\",
@@ -77,7 +87,7 @@ echo "$TABLES_RESPONSE"
 
 # Test executeQuery tool with broadcast to test SSE
 echo -e "\nTesting executeQuery tool with broadcast..."
-QUERY_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp" \
+QUERY_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp?sessionId=$SESSION_ID" \
   -H "Content-Type: application/json" \
   -d "{
     \"jsonrpc\": \"2.0\",
@@ -86,7 +96,7 @@ QUERY_RESPONSE=$(curl -s -X POST "http://localhost:8080/mcp" \
     \"params\": {
       \"name\": \"executeQuery\",
       \"arguments\": {
-        \"query\": \"SELECT current_database(), current_schema()\",
+        \"query\": \"SELECT current_database(), current_user\",
         \"schema\": \"public\",
         \"broadcast\": true,
         \"eventName\": \"test_query_result\"
