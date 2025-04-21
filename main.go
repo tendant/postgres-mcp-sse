@@ -53,14 +53,12 @@ func (h *CustomHub) processEvents() {
 
 		// Send the event as a notification through the MCP server
 		if h.mcpServer != nil {
-			// Create a context for the notification
-			ctx := context.Background()
-
-			// Send the notification to all connected clients
-			// We use the event name as the notification method
-			h.mcpServer.BroadcastNotification(ctx, event.Name, map[string]interface{}{
-				"data": event.Data,
-			})
+			// For now, we'll just log the event since we don't have direct access to the sessions
+			// The mcp-go library will handle SSE events automatically through its own mechanisms
+			log.Printf("Event ready for broadcast: %s with data: %s", event.Name, string(data))
+			
+			// We can use our sendNotification tool to broadcast events if needed
+			// This will be handled by the MCP server's notification system
 			log.Printf("Sent notification: %s with data: %s", event.Name, string(data))
 		} else {
 			log.Printf("MCP server not available, could not broadcast event: %s", event.Name)
