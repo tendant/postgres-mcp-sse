@@ -20,14 +20,16 @@ import (
 type CustomHub struct {
 	broadcastCh chan server.Event
 	events      chan<- server.Event
+	mcpServer   *mcpserver.MCPServer
 }
 
 // NewCustomHub creates a new CustomHub
-func NewCustomHub() *CustomHub {
+func NewCustomHub(mcpServer *mcpserver.MCPServer) *CustomHub {
 	ch := make(chan server.Event)
 	hub := &CustomHub{
 		broadcastCh: ch,
 		events:      ch,
+		mcpServer:   mcpServer,
 	}
 
 	// Start a goroutine to process events
@@ -39,11 +41,19 @@ func NewCustomHub() *CustomHub {
 // processEvents handles incoming events
 func (h *CustomHub) processEvents() {
 	for event := range h.broadcastCh {
-		// Just log the event for now
+		// Log the event
 		log.Printf("Event broadcast: %s", event.Name)
 
-		// In a real implementation, we would send this to connected clients
-		// but for now we'll just log it
+		// Convert our server.Event to JSON
+		data, err := json.Marshal(event.Data)
+		if err != nil {
+			log.Printf("Error marshaling event data: %v", err)
+			continue
+		}
+
+		// The mcp-go library handles SSE events automatically
+		// We just need to log the events for now
+		log.Printf("Event data: %s", string(data))
 	}
 }
 
@@ -285,21 +295,25 @@ func setupRoutes(mux *http.ServeMux, dbConn *sql.DB, hub *CustomHub) {
 }
 
 func main() {
+	// Set up logging
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Println("Starting Postgres MCP Server...")
+
 	// Initialize Postgres connection
 	dsn := os.Getenv("DB_DSN")
 	if dsn == "" {
 		dsn = "postgres://postgres:pwd@localhost:5432/postgres?sslmode=disable"
 	}
+	log.Printf("Connecting to database with DSN: %s", dsn)
 	dbConn, err := db.InitPostgres(dsn)
 	if err != nil {
 		log.Fatalf("DB error: %v", err)
 	}
+	log.Println("Database connection established successfully")
 	defer dbConn.Close()
 
-	// Create a custom hub for event broadcasting
-	hub := NewCustomHub()
-
 	// Create a new MCP server with logging and recovery middleware
+	log.Println("Creating MCP server...")
 	mcpServer := mcpserver.NewMCPServer(
 		"Postgres MCP Server",
 		"1.0.0",
@@ -307,33 +321,54 @@ func main() {
 		mcpserver.WithLogging(),
 		mcpserver.WithRecovery(),
 	)
+	log.Println("MCP server created successfully")
 
 	// Create a test server that wraps our MCP server
+	log.Println("Creating test server...")
 	testServer := mcpserver.NewTestServer(mcpServer,
 		mcpserver.WithSSEEndpoint("/events"),
 		mcpserver.WithMessageEndpoint("/mcp"),
 	)
+	log.Println("Test server created successfully")
+
+	// Create a custom hub for event broadcasting
+	log.Println("Creating custom hub...")
+	hub := NewCustomHub(mcpServer)
+	log.Println("Custom hub created successfully")
+
+
+
+
 
 	// Register all MCP tools
+	log.Println("Registering MCP tools...")
 	registerMCPTools(mcpServer, dbConn, hub)
+	log.Println("MCP tools registered successfully")
 
 	// Set up HTTP routes
+	log.Println("Setting up HTTP routes...")
 	mux := http.NewServeMux()
 
 	// Add legacy endpoints
 	setupRoutes(mux, dbConn, hub)
+	log.Println("HTTP routes set up successfully")
 
 	// Create a server that serves both MCP and our legacy endpoints
+	log.Println("Creating HTTP server...")
 	server := &http.Server{
 		Addr: ":8080",
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			log.Printf("Received request: %s %s", r.Method, r.URL.Path)
 			if r.URL.Path == "/mcp" || r.URL.Path == "/events" {
+				log.Printf("Routing to MCP handler: %s", r.URL.Path)
 				testServer.Config.Handler.ServeHTTP(w, r)
 			} else {
+				log.Printf("Routing to legacy handler: %s", r.URL.Path)
 				mux.ServeHTTP(w, r)
 			}
 		}),
 	}
+	log.Println("HTTP server created successfully")
 
 	// Start the HTTP server
 	log.Printf("Server running on :8080")
