@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 
@@ -56,7 +57,7 @@ func (h *CustomHub) processEvents() {
 			// For now, we'll just log the event since we don't have direct access to the sessions
 			// The mcp-go library will handle SSE events automatically through its own mechanisms
 			log.Printf("Event ready for broadcast: %s with data: %s", event.Name, string(data))
-			
+
 			// We can use our sendNotification tool to broadcast events if needed
 			// This will be handled by the MCP server's notification system
 			log.Printf("Sent notification: %s with data: %s", event.Name, string(data))
@@ -358,11 +359,6 @@ func main() {
 
 	// Create a test server that wraps our MCP server
 	log.Println("Creating test server...")
-	testServer := mcpserver.NewTestServer(mcpServer,
-		mcpserver.WithSSEEndpoint("/events"),
-		mcpserver.WithMessageEndpoint("/mcp"),
-	)
-	log.Println("Test server created successfully")
 
 	// Create a custom hub for event broadcasting
 	log.Println("Creating custom hub...")
@@ -374,34 +370,12 @@ func main() {
 	registerMCPTools(mcpServer, dbConn, hub)
 	log.Println("MCP tools registered successfully")
 
-	// Set up HTTP routes
-	log.Println("Setting up HTTP routes...")
-	mux := http.NewServeMux()
-
-	// Add legacy endpoints
-	setupRoutes(mux, dbConn, hub)
-	log.Println("HTTP routes set up successfully")
-
-	// Create a server that serves both MCP and our legacy endpoints
-	log.Println("Creating HTTP server...")
-	httpServer := &http.Server{
-		Addr: ":8080",
-		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			log.Printf("Received request: %s %s", r.Method, r.URL.Path)
-			if r.URL.Path == "/mcp" || r.URL.Path == "/events" {
-				log.Printf("Routing to MCP handler: %s", r.URL.Path)
-				testServer.Config.Handler.ServeHTTP(w, r)
-			} else {
-				log.Printf("Routing to legacy handler: %s", r.URL.Path)
-				mux.ServeHTTP(w, r)
-			}
-		}),
+	sseServer := mcpserver.NewSSEServer(mcpServer, mcpserver.WithBaseURL("http://localhost:8080"))
+	slog.Info("Starting SSE server on port 8080")
+	if err := sseServer.Start(":8080"); err != nil {
+		slog.Error("Failed to start SSE server", "err", err)
 	}
-	log.Println("HTTP server created successfully")
 
-	// Start the HTTP server
-	log.Printf("Server running on :8080")
-	log.Fatal(httpServer.ListenAndServe())
 }
 
 // executeQuery executes a SQL query and returns the results
