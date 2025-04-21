@@ -51,9 +51,20 @@ func (h *CustomHub) processEvents() {
 			continue
 		}
 
-		// The mcp-go library handles SSE events automatically
-		// We just need to log the events for now
-		log.Printf("Event data: %s", string(data))
+		// Send the event as a notification through the MCP server
+		if h.mcpServer != nil {
+			// Create a context for the notification
+			ctx := context.Background()
+
+			// Send the notification to all connected clients
+			// We use the event name as the notification method
+			h.mcpServer.BroadcastNotification(ctx, event.Name, map[string]interface{}{
+				"data": event.Data,
+			})
+			log.Printf("Sent notification: %s with data: %s", event.Name, string(data))
+		} else {
+			log.Printf("MCP server not available, could not broadcast event: %s", event.Name)
+		}
 	}
 }
 
@@ -64,6 +75,30 @@ func (h *CustomHub) Broadcast() chan<- server.Event {
 
 // registerMCPTools registers all the MCP tools with the MCP server
 func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *CustomHub) {
+	// Register a tool handler for sending notifications
+	mcpServer.AddTool(mcp.NewTool("sendNotification",
+		mcp.WithDescription("Send a notification to the client"),
+		mcp.WithString("event",
+			mcp.Required(),
+			mcp.Description("Event name"),
+		),
+		mcp.WithString("data",
+			mcp.Required(),
+			mcp.Description("Event data"),
+		),
+	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Extract event name and data from the request
+		eventName := request.Params.Arguments["event"].(string)
+		eventData := request.Params.Arguments["data"].(string)
+
+		// Log the event
+		log.Printf("Sending notification: %s with data: %s", eventName, eventData)
+
+		// Broadcast the event through the hub
+		hub.Broadcast() <- server.NewEvent(eventName, eventData)
+
+		return mcp.NewToolResultText(fmt.Sprintf("Notification sent: %s", eventName)), nil
+	})
 	// 1. Execute Query Tool
 	executeQueryTool := mcp.NewTool("executeQuery",
 		mcp.WithDescription("Execute a SQL query against the database"),
@@ -336,10 +371,6 @@ func main() {
 	hub := NewCustomHub(mcpServer)
 	log.Println("Custom hub created successfully")
 
-
-
-
-
 	// Register all MCP tools
 	log.Println("Registering MCP tools...")
 	registerMCPTools(mcpServer, dbConn, hub)
@@ -355,7 +386,7 @@ func main() {
 
 	// Create a server that serves both MCP and our legacy endpoints
 	log.Println("Creating HTTP server...")
-	server := &http.Server{
+	httpServer := &http.Server{
 		Addr: ":8080",
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			log.Printf("Received request: %s %s", r.Method, r.URL.Path)
@@ -372,7 +403,7 @@ func main() {
 
 	// Start the HTTP server
 	log.Printf("Server running on :8080")
-	log.Fatal(server.ListenAndServe())
+	log.Fatal(httpServer.ListenAndServe())
 }
 
 // executeQuery executes a SQL query and returns the results
