@@ -341,14 +341,14 @@ func main() {
 	}
 	log.Printf("Connecting to database with DSN: %s", dsn)
 
-	baseURL := os.Getenv("BASE_URL")
-	if baseURL == "" {
-		baseURL = "http://localhost:8080"
-	}
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
+	}
+
+	baseURL := os.Getenv("BASE_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:" + port
 	}
 
 	dbConn, err := db.InitPostgres(dsn)
