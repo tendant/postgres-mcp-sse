@@ -343,14 +343,12 @@ func main() {
 
 	baseURL := os.Getenv("BASE_URL")
 	if baseURL == "" {
-		slog.Error("BASE_URL environment variable is not set")
-		return
+		baseURL = "http://localhost:8080"
 	}
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		slog.Error("PORT environment variable is not set")
-		return
+		port = "8080"
 	}
 
 	dbConn, err := db.InitPostgres(dsn)
