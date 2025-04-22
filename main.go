@@ -326,6 +326,7 @@ func setupRoutes(mux *http.ServeMux, dbConn *sql.DB, hub *CustomHub) {
 	mux.HandleFunc("/schema/sample", server.SampleRowsHandler(dbConn))
 	mux.HandleFunc("/schema/foreign_keys", server.ForeignKeysHandler(dbConn))
 	mux.HandleFunc("/schema/list_schemas", server.ListSchemasHandler(dbConn))
+
 }
 
 func main() {
@@ -339,6 +340,17 @@ func main() {
 		dsn = "postgres://postgres:pwd@localhost:5432/postgres?sslmode=disable"
 	}
 	log.Printf("Connecting to database with DSN: %s", dsn)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	baseURL := os.Getenv("BASE_URL")
+	if baseURL == "" {
+		baseURL = "http://localhost:" + port
+	}
+
 	dbConn, err := db.InitPostgres(dsn)
 	if err != nil {
 		log.Fatalf("DB error: %v", err)
@@ -370,10 +382,10 @@ func main() {
 	registerMCPTools(mcpServer, dbConn, hub)
 	log.Println("MCP tools registered successfully")
 
-	sseServer := mcpserver.NewSSEServer(mcpServer, mcpserver.WithBaseURL("http://localhost:8080"))
-	slog.Info("Starting SSE server on port 8080")
-	if err := sseServer.Start(":8080"); err != nil {
-		slog.Error("Failed to start SSE server", "err", err)
+	sseServer := mcpserver.NewSSEServer(mcpServer, mcpserver.WithBaseURL(baseURL))
+	slog.Info("Starting SSE server with base URL: " + baseURL)
+	if err := sseServer.Start(":" + port); err != nil {
+		slog.Error("Failed to start SSE server", "err", err, "port", port)
 	}
 
 }
