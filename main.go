@@ -350,6 +350,7 @@ func main() {
 	if baseURL == "" {
 		baseURL = "http://localhost:" + port
 	}
+	
 
 	dbConn, err := db.InitPostgres(dsn)
 	if err != nil {
@@ -383,7 +384,8 @@ func main() {
 	log.Println("MCP tools registered successfully")
 
 	sseServer := mcpserver.NewSSEServer(mcpServer, mcpserver.WithBaseURL(baseURL))
-	slog.Info("Starting SSE server with base URL: " + baseURL)
+	slog.Info("Starting SSE server with base URL: "+baseURL, "port", port)
+
 	if err := sseServer.Start(":" + port); err != nil {
 		slog.Error("Failed to start SSE server", "err", err, "port", port)
 	}
