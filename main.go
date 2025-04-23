@@ -339,7 +339,7 @@ func main() {
 	if dsn == "" {
 		dsn = "postgres://postgres:pwd@localhost:5432/postgres?sslmode=disable"
 	}
-	log.Printf("Connecting to database with DSN: %s", dsn)
+	log.Printf("Connecting to database")
 
 	port := os.Getenv("PORT")
 	if port == "" {
