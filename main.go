@@ -75,7 +75,7 @@ func (h *CustomHub) Broadcast() chan<- server.Event {
 // registerMCPTools registers all the MCP tools with the MCP server
 func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *CustomHub) {
 	// Register a tool handler for sending notifications
-	mcpServer.AddTool(mcp.NewTool("sendNotification",
+	mcpServer.AddTool(mcp.NewTool("Send Notification",
 		mcp.WithDescription("Send a notification to the client"),
 		mcp.WithString("event",
 			mcp.Required(),
@@ -99,7 +99,7 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 		return mcp.NewToolResultText(fmt.Sprintf("Notification sent: %s", eventName)), nil
 	})
 	// 1. Execute Query Tool
-	executeQueryTool := mcp.NewTool("executeQuery",
+	executeQueryTool := mcp.NewTool("Execute Query",
 		mcp.WithDescription("Execute a SQL query against the database"),
 		mcp.WithString("query",
 			mcp.Required(),
@@ -163,7 +163,7 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 	})
 
 	// 3. List Tables Tool
-	listTablesTool := mcp.NewTool("listTables",
+	listTablesTool := mcp.NewTool("List Tables",
 		mcp.WithDescription("List all tables in a schema"),
 		mcp.WithString("schema",
 			mcp.Description("Database schema name"),
@@ -188,7 +188,7 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 	})
 
 	// 4. Get Full Table Schema Tool
-	getFullTableSchemaTool := mcp.NewTool("getFullTableSchema",
+	getFullTableSchemaTool := mcp.NewTool("Get Full Table Schema",
 		mcp.WithDescription("Get full schema information for a table"),
 		mcp.WithString("table",
 			mcp.Required(),
@@ -218,7 +218,7 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 	})
 
 	// 5. Describe Table Tool
-	describeTableTool := mcp.NewTool("describeTable",
+	describeTableTool := mcp.NewTool("Describe Table",
 		mcp.WithDescription("Get column information for a table"),
 		mcp.WithString("table",
 			mcp.Required(),
@@ -248,7 +248,7 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 	})
 
 	// 6. Sample Rows Tool
-	sampleRowsTool := mcp.NewTool("sampleRows",
+	sampleRowsTool := mcp.NewTool("Sample Rows",
 		mcp.WithDescription("Get sample rows from a table"),
 		mcp.WithString("table",
 			mcp.Required(),
@@ -286,7 +286,7 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 	})
 
 	// 7. Get Foreign Keys Tool
-	getForeignKeysTool := mcp.NewTool("getForeignKeys",
+	getForeignKeysTool := mcp.NewTool("Get Foreign Keys",
 		mcp.WithDescription("Get foreign key relationships for a table"),
 		mcp.WithString("table",
 			mcp.Required(),
