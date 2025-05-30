@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"log/slog"
@@ -87,8 +88,8 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 		),
 	), func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		// Extract event name and data from the request
-		eventName := request.Params.Arguments["event"].(string)
-		eventData := request.Params.Arguments["data"].(string)
+		eventName := request.GetArguments()["event"].(string)
+		eventData := request.GetArguments()["data"].(string)
 
 		// Log the event
 		log.Printf("Sending notification: %s with data: %s", eventName, eventData)
@@ -119,13 +120,13 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 	)
 
 	mcpServer.AddTool(executeQueryTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		query := request.Params.Arguments["query"].(string)
-		schema, ok := request.Params.Arguments["schema"].(string)
+		query := request.GetArguments()["query"].(string)
+		schema, ok := request.GetArguments()["schema"].(string)
 		if !ok {
 			schema = "public"
 		}
-		broadcast, _ := request.Params.Arguments["broadcast"].(bool)
-		eventName, _ := request.Params.Arguments["eventName"].(string)
+		broadcast, _ := request.GetArguments()["broadcast"].(bool)
+		eventName, _ := request.GetArguments()["eventName"].(string)
 		if eventName == "" {
 			eventName = "query_result"
 		}
@@ -172,7 +173,7 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 	)
 
 	mcpServer.AddTool(listTablesTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		schema, ok := request.Params.Arguments["schema"].(string)
+		schema, ok := request.GetArguments()["schema"].(string)
 		if !ok {
 			schema = "public"
 		}
@@ -201,8 +202,8 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 	)
 
 	mcpServer.AddTool(getFullTableSchemaTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		table := request.Params.Arguments["table"].(string)
-		schema, ok := request.Params.Arguments["schema"].(string)
+		table := request.GetArguments()["table"].(string)
+		schema, ok := request.GetArguments()["schema"].(string)
 		if !ok {
 			schema = "public"
 		}
@@ -231,8 +232,8 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 	)
 
 	mcpServer.AddTool(describeTableTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		table := request.Params.Arguments["table"].(string)
-		schema, ok := request.Params.Arguments["schema"].(string)
+		table := request.GetArguments()["table"].(string)
+		schema, ok := request.GetArguments()["schema"].(string)
 		if !ok {
 			schema = "public"
 		}
@@ -265,13 +266,13 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 	)
 
 	mcpServer.AddTool(sampleRowsTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		table := request.Params.Arguments["table"].(string)
-		schema, ok := request.Params.Arguments["schema"].(string)
+		table := request.GetArguments()["table"].(string)
+		schema, ok := request.GetArguments()["schema"].(string)
 		if !ok {
 			schema = "public"
 		}
 		limit := 5
-		if limitVal, ok := request.Params.Arguments["limit"].(float64); ok {
+		if limitVal, ok := request.GetArguments()["limit"].(float64); ok {
 			limit = int(limitVal)
 		}
 
@@ -299,8 +300,8 @@ func registerMCPTools(mcpServer *mcpserver.MCPServer, dbConn *sql.DB, hub *Custo
 	)
 
 	mcpServer.AddTool(getForeignKeysTool, func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		table := request.Params.Arguments["table"].(string)
-		schema, ok := request.Params.Arguments["schema"].(string)
+		table := request.GetArguments()["table"].(string)
+		schema, ok := request.GetArguments()["schema"].(string)
 		if !ok {
 			schema = "public"
 		}
@@ -330,6 +331,12 @@ func setupRoutes(mux *http.ServeMux, dbConn *sql.DB, hub *CustomHub) {
 }
 
 func main() {
+	// Define command line flags for server mode
+	var mode = flag.String("mode", "sse", "Server mode: 'stdio', 'sse', or 'http'")
+	
+	// Parse command line flags
+	flag.Parse()
+
 	// Set up logging
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("Starting Postgres MCP Server...")
@@ -350,7 +357,6 @@ func main() {
 	if baseURL == "" {
 		baseURL = "http://localhost:" + port
 	}
-	
 
 	dbConn, err := db.InitPostgres(dsn)
 	if err != nil {
@@ -383,13 +389,27 @@ func main() {
 	registerMCPTools(mcpServer, dbConn, hub)
 	log.Println("MCP tools registered successfully")
 
-	sseServer := mcpserver.NewSSEServer(mcpServer, mcpserver.WithBaseURL(baseURL))
-	slog.Info("Starting SSE server with base URL: "+baseURL, "port", port)
-
-	if err := sseServer.Start(":" + port); err != nil {
-		slog.Error("Failed to start SSE server", "err", err, "port", port)
+	// Start the server based on the selected mode
+	switch *mode {
+	case "sse":
+		sseServer := mcpserver.NewSSEServer(mcpServer, mcpserver.WithBaseURL(baseURL))
+		slog.Info("Starting SSE server with base URL: "+baseURL, "port", port)
+		if err := sseServer.Start(":" + port); err != nil {
+			slog.Error("Failed to start SSE server", "err", err, "port", port)
+		}
+	case "http":
+		httpServer := mcpserver.NewStreamableHTTPServer(mcpServer)
+		log.Printf("HTTP server listening on :%s", port)
+		if err := httpServer.Start(":" + port); err != nil {
+			log.Fatalf("Server error: %v", err)
+		}
+	default:
+		// Default to stdio mode
+		slog.Info("Starting in stdio mode")
+		if err := mcpserver.ServeStdio(mcpServer); err != nil {
+			slog.Error("Failed to start stdio server", "err", err)
+		}
 	}
-
 }
 
 // executeQuery executes a SQL query and returns the results
