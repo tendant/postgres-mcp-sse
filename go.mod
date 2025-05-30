@@ -4,7 +4,7 @@ go 1.23.5
 
 require (
 	github.com/lib/pq v1.10.9
-	github.com/mark3labs/mcp-go v0.22.0
+	github.com/mark3labs/mcp-go v0.31.0
 )
 
 require (
