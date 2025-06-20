@@ -88,7 +88,7 @@ func ExecuteQueryHandler(db *sql.DB, hub HubInterface) http.HandlerFunc {
 			rows.Scan(columnPtrs...)
 			rowMap := make(map[string]interface{})
 			for i, col := range cols {
-				rowMap[col] = columnVals[i]
+				rowMap[col] = convertValue(columnVals[i])
 			}
 			results = append(results, rowMap)
 		}
@@ -163,7 +163,7 @@ func FullTableSchemaHandler(db *sql.DB) http.HandlerFunc {
 				sampleRows.Scan(columnPtrs...)
 				rowMap := make(map[string]interface{})
 				for i, col := range cols {
-					rowMap[col] = columnVals[i]
+					rowMap[col] = convertValue(columnVals[i])
 				}
 				samples = append(samples, rowMap)
 			}
@@ -289,7 +289,7 @@ func SampleRowsHandler(db *sql.DB) http.HandlerFunc {
 			rows.Scan(columnPtrs...)
 			rowMap := make(map[string]interface{})
 			for i, col := range cols {
-				rowMap[col] = columnVals[i]
+				rowMap[col] = convertValue(columnVals[i])
 			}
 			result = append(result, rowMap)
 		}
