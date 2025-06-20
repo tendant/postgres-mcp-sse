@@ -39,7 +39,7 @@ func ExecuteQuery(db *sql.DB, schema, query string, args []interface{}) (map[str
 		rows.Scan(columnPtrs...)
 		rowMap := make(map[string]interface{})
 		for i, col := range cols {
-			rowMap[col] = columnVals[i]
+			rowMap[col] = convertValue(columnVals[i])
 		}
 		results = append(results, rowMap)
 	}
@@ -197,7 +197,7 @@ func SampleRows(db *sql.DB, schema, table string, limit int) (map[string]interfa
 		rows.Scan(columnPtrs...)
 		rowMap := make(map[string]interface{})
 		for i, col := range cols {
-			rowMap[col] = columnVals[i]
+			rowMap[col] = convertValue(columnVals[i])
 		}
 		results = append(results, rowMap)
 	}
